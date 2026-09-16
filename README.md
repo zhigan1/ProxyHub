@@ -1,4 +1,4 @@
-# ProxyHub
+﻿# ProxyHub
 
 一个把本机多个 AI 编程平台的登录凭据与额度统一封装成**单套 OpenAI 兼容服务**的反向代理网关（.NET 10 / ASP.NET Core）。
 
@@ -174,7 +174,7 @@ dotnet test
       // … 调用平台枚举接口，把结果映射为 ({平台}-{模型}, {上游模型 ID})
   }
   ```
-- 各平台现状：**Qoder** 已接入真实动态源（`qoderclicn --list-models`，宽容解析 JSON 或表格行）；**CodeBuddy / Trae 系**暂未提供免鉴权的稳定枚举端点，使用内置基线（可自行在 `FetchModelsAsync` 中接入厂商模型管理 API）。
+- 各平台现状：**Qoder** 已接入真实动态源（`qoderclicn --list-models`，宽容解析 JSON 或表格行）；**CodeBuddy** 已接入多层真实动态源（本地服务端下发缓存 `~/.codebuddy/local_storage/entry_*.info`、安装配置清单 `product.json` / `product.internal.json`、CLI 探测 `codebuddy --help`）；**Trae 系**暂未提供免鉴权的稳定枚举端点，使用内置基线（可自行在 `FetchModelsAsync` 中接入厂商模型管理 API）。
 
 ## 错误码语义
 

@@ -1,11 +1,14 @@
+﻿using System.Diagnostics;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace ProxyHub.Adapters;
 
 /// <summary>
 /// CodeBuddy / WorkBuddy 适配器。
-/// 凭据：自动读取 %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\*.info（桌面端自动刷新 token，重读即刷新）。
-/// 上游：copilot.tencent.com/v2，标准 OpenAI SSE；请求头模拟 CodeBuddy CLI 客户端身份。
+/// 凭据：自动读取 %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\*.info，自动刷新 token。
+/// 协议：copilot.tencent.com/v2 标准 OpenAI SSE，重头模拟 CodeBuddy CLI 客户端。
+/// 模型：支持多层动态发现（本地服务端下发缓存 -> 产品清单 -> CLI 命令行探测），动态优先，静态兜底。
 /// </summary>
 public sealed class CodeBuddyAdapter : IAdapter
 {
@@ -13,7 +16,7 @@ public sealed class CodeBuddyAdapter : IAdapter
 
     private static readonly string[] AuthFiles = BuildAuthFiles();
 
-    // 固定请求头：模拟 CLI 客户端身份，让上游认为是合法 CodeBuddy CLI 请求
+    // 固定请求头模拟：模拟 CLI 客户端，证明是合法的 CodeBuddy CLI 请求
     private static readonly Dictionary<string, string> FixedHeaders = new()
     {
         ["X-Domain"] = "www.codebuddy.cn",
@@ -29,18 +32,24 @@ public sealed class CodeBuddyAdapter : IAdapter
         ["X-Private-Data"] = "false",
     };
 
-    private static readonly string[] Models =
+    private static readonly string[] BaselineModels =
     {
-        "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "minimax-m3", "minimax-m2.7",
-        "glm-5.2", "glm-5.1", "glm-5v-turbo", "kimi-k3-1", "kimi-k2.7",
-        "kimi-k2.6", "hy3",
+        "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4.1-flash",
+        "minimax-m3", "minimax-m2.7", "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1",
+        "glm-5v-turbo", "kimi-k3-1", "kimi-k2.8-preview", "kimi-k2.7", "kimi-k2.6",
+        "hy4-preview", "hy3", "hy3-x", "hunyuan-chat",
     };
 
-    private readonly TimeSpan _timeout;
+    private static readonly Regex CliHelpSupportedRegex =
+        new(@"Currently supported:\s*\(([^)]+)\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    public CodeBuddyAdapter(TimeSpan? timeout = null)
+    private readonly TimeSpan _timeout;
+    private readonly string _cliCommand;
+
+    public CodeBuddyAdapter(TimeSpan? timeout = null, string? cliCommand = null)
     {
         _timeout = timeout ?? TimeSpan.FromMilliseconds(120_000);
+        _cliCommand = cliCommand ?? Environment.GetEnvironmentVariable("CODEBUDDY_CLI") ?? "codebuddy";
     }
 
     public string Id => "codebuddy";
@@ -56,7 +65,7 @@ public sealed class CodeBuddyAdapter : IAdapter
         };
     }
 
-    /// <summary>遍历凭据文件，返回 { token, uid }；全部缺失则抛错（Fail Fast）。</summary>
+    /// <summary>读凭据文件 { token, uid }，全部缺失才抛异常（Fail Fast）。</summary>
     public Task<AuthInfo> GetAuthAsync(CancellationToken ct = default)
     {
         foreach (var file in AuthFiles)
@@ -71,17 +80,266 @@ public sealed class CodeBuddyAdapter : IAdapter
             }
             catch
             {
-                // 文件不存在或解析失败，尝试下一个
+                // 单个文件损坏或读取失败，继续尝试下一个
             }
         }
-        throw new InvalidOperationException("未找到 CodeBuddy/WorkBuddy 登录凭据，请先登录 WorkBuddy 桌面端");
+        throw new InvalidOperationException("未找到 CodeBuddy/WorkBuddy 登录凭据，请先登录 WorkBuddy 客户端。");
     }
 
-    // WorkBuddy 桌面端会自动刷新 token 文件，重新读取即可拿到最新 token
+    // WorkBuddy 客户端会自动刷新 token 到文件，每次读取即可拿到最新 token
     public Task<AuthInfo> RefreshAuthAsync(CancellationToken ct = default) => GetAuthAsync(ct);
 
     public IReadOnlyList<ModelRegistration> RegisterModels() =>
-        Models.Select(m => new ModelRegistration($"codebuddy-{m}", m)).ToArray();
+        BaselineModels.Select(m => new ModelRegistration($"codebuddy-{m}", m)).ToArray();
+
+    /// <summary>
+    /// 动态获取模型列表：按策略多层探测
+    /// 1. 扫描 ~/.codebuddy/local_storage/entry_*.info 动态服务端下发缓存
+    /// 2. 扫描 WorkBuddy / CodeBuddy 安装目录下的 product.json / product.internal.json
+    /// 3. 执行 codebuddy --help 提取当前支持模型
+    /// 4. 若全部失败则返回 null，由 Registry 回退至 RegisterModels 的静态兜底
+    /// </summary>
+    public async Task<IReadOnlyList<ModelRegistration>?> FetchModelsAsync(CancellationToken ct = default)
+    {
+        var discovered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // 1. 本地动态服务端下发缓存
+        try
+        {
+            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var storageDir = Path.Combine(userProfile, ".codebuddy", "local_storage");
+            if (Directory.Exists(storageDir))
+            {
+                var files = new DirectoryInfo(storageDir)
+                    .GetFiles("entry_*.info")
+                    .OrderByDescending(f => f.LastWriteTimeUtc);
+
+                foreach (var file in files)
+                {
+                    try
+                    {
+                        var content = await File.ReadAllTextAsync(file.FullName, ct).ConfigureAwait(false);
+                        var models = ParseLocalStorageInfo(content);
+                        foreach (var m in models) discovered.Add(m);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch { /* 容错：单个文件解析失败忽略 */ }
+                }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { /* 目录不存在或访问失败忽略 */ }
+
+        // 2. 本地安装产品清单文件
+        try
+        {
+            var candidatePaths = GetProductJsonCandidatePaths();
+            foreach (var path in candidatePaths)
+            {
+                if (File.Exists(path))
+                {
+                    try
+                    {
+                        var content = await File.ReadAllTextAsync(path, ct).ConfigureAwait(false);
+                        var models = ParseProductJson(content);
+                        foreach (var m in models) discovered.Add(m);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch { /* 忽略单个清单解析失败 */ }
+                }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { /* 忽略异常 */ }
+
+        // 3. 执行 CLI 探测 (codebuddy --help)
+        if (discovered.Count == 0)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo(_cliCommand)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                };
+                psi.ArgumentList.Add("--help");
+
+                using var child = Process.Start(psi);
+                if (child != null)
+                {
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    cts.CancelAfter(TimeSpan.FromSeconds(5));
+
+                    var stdoutTask = child.StandardOutput.ReadToEndAsync(cts.Token);
+                    var stderrTask = child.StandardError.ReadToEndAsync(cts.Token);
+                    await child.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+
+                    var output = (await stdoutTask.ConfigureAwait(false)) + "\n" + (await stderrTask.ConfigureAwait(false));
+                    var models = ParseCliHelpOutput(output);
+                    foreach (var m in models) discovered.Add(m);
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch { /* CLI 不可用或超时忽略 */ }
+        }
+
+        if (discovered.Count == 0)
+            return null;
+
+        return discovered
+            .Select(m => new ModelRegistration($"{Id}-{m}", m))
+            .ToList();
+    }
+
+    private static IEnumerable<string> GetProductJsonCandidatePaths()
+    {
+        var envPath = Environment.GetEnvironmentVariable("CODEBUDDY_PRODUCT_PATH");
+        if (!string.IsNullOrEmpty(envPath)) yield return envPath;
+
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        yield return Path.Combine(userProfile, ".codebuddy", "product.json");
+
+        var p86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        if (!string.IsNullOrEmpty(p86))
+        {
+            yield return Path.Combine(p86, "Code", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "product.json");
+            yield return Path.Combine(p86, "Code", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "product.internal.json");
+            yield return Path.Combine(p86, "CodeBuddy CN", "resources", "app", "product-ide-cn.json");
+        }
+
+        var p64 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        if (!string.IsNullOrEmpty(p64) && !string.Equals(p64, p86, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return Path.Combine(p64, "Code", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "product.json");
+            yield return Path.Combine(p64, "Code", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "product.internal.json");
+        }
+
+        var localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrEmpty(localApp))
+        {
+            yield return Path.Combine(localApp, "Programs", "CodeBuddy", "resources", "app.asar.unpacked", "cli", "product.json");
+            yield return Path.Combine(localApp, "Programs", "CodeBuddy", "resources", "app.asar.unpacked", "cli", "product.internal.json");
+        }
+    }
+
+    public static List<string> ParseLocalStorageInfo(string jsonContent)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrWhiteSpace(jsonContent)) return result;
+
+        try
+        {
+            var node = JsonNode.Parse(jsonContent);
+            if (node is JsonArray arr)
+            {
+                foreach (var item in arr)
+                {
+                    if (item is JsonObject obj)
+                        ExtractModelsFromData(obj, result);
+                }
+            }
+            else if (node is JsonObject obj)
+            {
+                ExtractModelsFromData(obj, result);
+            }
+        }
+        catch { /* JSON 格式不合法或包含非 JSON 数据 */ }
+
+        return result;
+    }
+
+    private static void ExtractModelsFromData(JsonObject root, List<string> result)
+    {
+        var data = root["data"] as JsonObject ?? root;
+
+        // 1. data.agents[].models
+        if (data["agents"] is JsonArray agents)
+        {
+            foreach (var agent in agents)
+            {
+                if (agent?["models"] is JsonArray agentModels)
+                {
+                    foreach (var m in agentModels)
+                    {
+                        var name = m?.GetValue<string>();
+                        if (IsChatModel(name) && !result.Contains(name!, StringComparer.OrdinalIgnoreCase))
+                            result.Add(name!);
+                    }
+                }
+            }
+        }
+
+        // 2. data.models[].id
+        if (data["models"] is JsonArray models)
+        {
+            foreach (var m in models)
+            {
+                var id = m?["id"]?.GetValue<string>() ?? (m as JsonValue)?.GetValue<string>();
+                if (IsChatModel(id) && !result.Contains(id!, StringComparer.OrdinalIgnoreCase))
+                    result.Add(id!);
+            }
+        }
+    }
+
+    public static List<string> ParseProductJson(string jsonContent)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrWhiteSpace(jsonContent)) return result;
+
+        try
+        {
+            var node = JsonNode.Parse(jsonContent);
+            if (node?["models"] is JsonArray models)
+            {
+                foreach (var m in models)
+                {
+                    var id = m?["id"]?.GetValue<string>();
+                    if (IsChatModel(id) && !result.Contains(id!, StringComparer.OrdinalIgnoreCase))
+                        result.Add(id!);
+                }
+            }
+        }
+        catch { /* 格式不合法 */ }
+
+        return result;
+    }
+
+    public static List<string> ParseCliHelpOutput(string helpOutput)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrWhiteSpace(helpOutput)) return result;
+
+        var match = CliHelpSupportedRegex.Match(helpOutput);
+        if (match.Success)
+        {
+            var list = match.Groups[1].Value;
+            foreach (var item in list.Split(','))
+            {
+                var trimmed = item.Trim();
+                if (IsChatModel(trimmed) && !result.Contains(trimmed, StringComparer.OrdinalIgnoreCase))
+                    result.Add(trimmed);
+            }
+        }
+
+        return result;
+    }
+
+    public static bool IsChatModel(string? modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId)) return false;
+        var trimmed = modelId.Trim();
+        if (trimmed.Equals("default", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (trimmed.StartsWith("completion-", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.StartsWith("codewise-", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.EndsWith("-completion", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (trimmed.StartsWith("custom-local:", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return true;
+    }
 
     public async Task ChatAsync(JsonObject request, Func<JsonObject, ValueTask> emit, CancellationToken ct = default)
     {
@@ -100,7 +358,7 @@ public sealed class CodeBuddyAdapter : IAdapter
             throw new HttpRequestException($"CodeBuddy upstream {(int)res.StatusCode}: {errBody[..Math.Min(200, errBody.Length)]}");
         }
 
-        // 上游为标准 OpenAI SSE：按 data: 行增量解析并原样转发 chunk（含上游 usage 等字段）
+        // 行为标准 OpenAI SSE，将 data: 的原始行转发为 chunk（含 usage 字段）
         await foreach (var (_, data) in res.ReadSseAsync(ct))
         {
             if (data == "[DONE]") continue;
