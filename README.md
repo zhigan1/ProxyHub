@@ -10,6 +10,7 @@
 - **多平台适配**：支持 CodeBuddy / WorkBuddy、Trae 国内版、TraeWork 桌面版、Qoder（CLI 桥接）。
 - **自动凭据发现**：自动读取本机桌面端登录态（含 Trae 系加密凭据的本地解密），无需手动填 key。
 - **到期自动换新**：TraeWork 在上游返回 401/403 时用本地 refreshToken 自动换取新 token 并重试。
+- **动态模型列表**：启动时自动从平台拉取"当前账号可用"模型（Qoder 走 `--list-models`），拉取失败自动回退内置基线，`/v1/models` 始终反映当前生效列表。
 - **零第三方依赖**：仅使用 .NET BCL 与 ASP.NET Core 共享框架。
 
 ## 快速开始
@@ -158,7 +159,22 @@ HTTP 入口（AppFactory：鉴权 · 路由 · 错误语义）
 dotnet test
 ```
 
-测试覆盖：模型路由与能力矩阵、SSE 直通与聚合、token 估算、凭据缓存（TTL / 过期 / 并发去重）、用量统计、配置加载于环境变量覆盖、各适配器协议归一化、本地加密凭据的往返与防篡改、端到端 HTTP 路由 / 鉴权 / 错误码 / 用量闭环。
+测试覆盖：模型路由与能力矩阵、SSE 直通与聚合、token 估算、凭据缓存（TTL / 过期 / 并发去重）、用量统计、配置加载于环境变量覆盖、各适配器协议归一化、本地加密凭据的往返与防篡改、动态模型拉取与静态回退、端到端 HTTP 路由 / 鉴权 / 错误码 / 用量闭环。
+
+## 动态模型列表
+
+模型来源分两级：**动态优先，静态回退**。
+
+- 每个 `IAdapter` 可由 `RegisterModels()` 声明内置基线（兜底），并可选择性实现 `FetchModelsAsync()` 从平台实时拉取当前账号可用的模型。
+- 网关启动时在后台调用所有适配器的动态源；成功且非空的适配器用动态表覆盖基线，拉取失败（未装 CLI、未登录、无稳定枚举端点等）静默保留基线，**不阻塞启动**。
+- 新增平台如想支持动态模型，只需实现 `FetchModelsAsync()` 并返回 `null`（= 不支持、回退静态）或抛错（= 拉取失败、回退静态）：
+  ```csharp
+  public Task<IReadOnlyList<ModelRegistration>?> FetchModelsAsync(CancellationToken ct = default)
+  {
+      // … 调用平台枚举接口，把结果映射为 ({平台}-{模型}, {上游模型 ID})
+  }
+  ```
+- 各平台现状：**Qoder** 已接入真实动态源（`qoderclicn --list-models`，宽容解析 JSON 或表格行）；**CodeBuddy / Trae 系**暂未提供免鉴权的稳定枚举端点，使用内置基线（可自行在 `FetchModelsAsync` 中接入厂商模型管理 API）。
 
 ## 错误码语义
 

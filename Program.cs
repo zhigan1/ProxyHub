@@ -2,7 +2,7 @@ using ProxyHub;
 using ProxyHub.Adapters;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// proxy-hub (.NET 10 复写版) —— 进程入口，对应上游 index.js 的 main()
+// ProxyHub —— 进程入口
 // 架构：Program（组装）→ AppFactory（路由）→ Registry（模型路由）→ Adapters（auth/models/request/stream）
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -21,5 +21,23 @@ foreach (var adapter in adapters) registry.Register(adapter);
 var app = AppFactory.Build(config, registry, usage, adapters);
 app.Urls.Clear();
 app.Urls.Add($"http://127.0.0.1:{config.Port}");
-Console.WriteLine($"proxy-hub (.NET) listening on http://127.0.0.1:{config.Port}");
-app.Run();
+
+// 启动期后台刷新动态模型列表（失败自动回退静态基线，不阻塞启动）
+_ = Task.Run(async () =>
+{
+    try
+    {
+        await registry.RefreshAsync();
+        Console.WriteLine(String.Join(Environment.NewLine,
+            adapters.Select(a => $"  {a.Id.PadRight(10)} models: {registry.EffectiveCount(a.Id)}")));
+        Console.WriteLine("Dynamic model refresh done (fallback to static on failure).");
+    }
+    catch (Exception e)
+    {
+        Console.WriteLine($"Dynamic model refresh skipped: {e.Message}");
+    }
+});
+
+await app.StartAsync();
+Console.WriteLine($"ProxyHub (.NET) listening on http://127.0.0.1:{config.Port}");
+await app.WaitForShutdownAsync();

@@ -6,7 +6,6 @@ namespace ProxyHub.Adapters;
 /// Trae 国内版（CN IDE）适配器。
 /// 凭据：自动解密 %APPDATA%\Trae CN\User\globalStorage\storage.json 中的 iCubeAuthInfo（tc 算法），
 /// 桌面端负责刷新 token，网关侧缓存 10 分钟。chat function=inline_chat。
-/// 对应上游 adapters/traecn.js。
 /// </summary>
 public sealed class TraeCnAdapter : TraeAdapterBase
 {

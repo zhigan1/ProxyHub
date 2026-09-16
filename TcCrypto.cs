@@ -6,7 +6,6 @@ namespace ProxyHub;
 /// <summary>
 /// Trae "tc" 加密值解密：AES-128-CBC + SHA-512 完整性校验。
 /// 算法逆向自 Trae 桌面端前端 JS（致谢 laojichao/trae-local-api），盐值原样保留，勿改。
-/// 对应上游 traecn.js 的 decryptTc / xorSalts。
 /// </summary>
 public static class TcCrypto
 {

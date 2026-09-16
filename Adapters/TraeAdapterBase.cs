@@ -6,7 +6,6 @@ namespace ProxyHub.Adapters;
 /// <summary>
 /// Trae 系适配器基类：Trae CN 与 TraeWork 共享同一套 tc 解密、上游主机、请求头伪装与 SSE 归一化，
 /// 差异仅在凭据目录 / chat function / token 刷新策略（见各子类）。
-/// 对应上游 traecn.js 与 traework.js 的公共部分。
 /// </summary>
 public abstract class TraeAdapterBase : IAdapter
 {

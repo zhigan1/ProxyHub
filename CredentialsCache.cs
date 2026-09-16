@@ -4,7 +4,6 @@ namespace ProxyHub;
 
 /// <summary>
 /// 通用凭据缓存：TTL + in-flight 去重（并发只触发一次底层刷新）。
-/// 对应上游 credentials.js。
 /// </summary>
 public sealed class CredentialsCache
 {

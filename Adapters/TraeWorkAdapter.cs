@@ -8,7 +8,6 @@ namespace ProxyHub.Adapters;
 ///   1. 凭据目录 %APPDATA%\TRAE SOLO CN；
 ///   2. chat function=solo_work_lite（轻排队）；
 ///   3. token 过期（401/403）时用本地 refreshToken 调 Trae OAuth ExchangeToken 自动换新并重试一次。
-/// 对应上游 adapters/traework.js。
 /// </summary>
 public sealed class TraeWorkAdapter : TraeAdapterBase
 {

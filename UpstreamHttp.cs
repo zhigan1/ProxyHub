@@ -7,8 +7,7 @@ namespace ProxyHub;
 
 /// <summary>
 /// 上游 HTTP 传输层：单例 HttpClient（连接池复用）+ 按请求超时 + 增量式 SSE 行解析。
-/// 对应上游各适配器内的 postJson / postJsonBuffer，但有一个关键改进：
-/// 上游 Node 版会把整个上游响应缓冲完再解析；这里用 ResponseHeadersRead + 逐行读取，
+/// 旧实现会把整个响应缓冲完再解析；这里用 ResponseHeadersRead + 逐行读取，
 /// 实现真正的流式反代（首个 token 即时下发）。
 /// </summary>
 public static class UpstreamHttp

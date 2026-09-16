@@ -6,7 +6,6 @@ namespace ProxyHub.Adapters;
 /// CodeBuddy / WorkBuddy 适配器。
 /// 凭据：自动读取 %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\*.info（桌面端自动刷新 token，重读即刷新）。
 /// 上游：copilot.tencent.com/v2，标准 OpenAI SSE；请求头模拟 CodeBuddy CLI 客户端身份。
-/// 对应上游 adapters/codebuddy.js。
 /// </summary>
 public sealed class CodeBuddyAdapter : IAdapter
 {
@@ -32,7 +31,7 @@ public sealed class CodeBuddyAdapter : IAdapter
 
     private static readonly string[] Models =
     {
-        "deepseek-v4-pro", "deepseek-v4-flash", "minimax-m3", "minimax-m2.7",
+        "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "minimax-m3", "minimax-m2.7",
         "glm-5.2", "glm-5.1", "glm-5v-turbo", "kimi-k3-1", "kimi-k2.7",
         "kimi-k2.6", "hy3",
     };

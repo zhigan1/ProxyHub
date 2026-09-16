@@ -5,7 +5,7 @@ namespace ProxyHub;
 
 /// <summary>
 /// 应用组装工厂：把 配置/注册表/用量/适配器 组装成 WebApplication（全部路由）。
-/// 从 Program 分离出来，使集成测试可以注入假适配器与独立配置（对应上游 buildHandler 的可测试性）。
+/// 从 Program 分离出来，使集成测试可以注入假适配器与独立配置（依赖注入模式）。
 /// </summary>
 public static class AppFactory
 {
@@ -40,8 +40,18 @@ public static class AppFactory
         app.MapGet("/v1/models", (HttpContext ctx) => !Authorized(ctx)
             ? Error("Unauthorized: missing or bad proxy key", StatusCodes.Status401Unauthorized)
             : Json(new { @object = "list", data = registry.ListModels() }));
+        app.MapGet("/models", (HttpContext ctx) => !Authorized(ctx)
+            ? Error("Unauthorized: missing or bad proxy key", StatusCodes.Status401Unauthorized)
+            : Json(new { @object = "list", data = registry.ListModels() }));
 
         app.MapGet("/v1/models/matrix", (HttpContext ctx) => !Authorized(ctx)
+            ? Error("Unauthorized: missing or bad proxy key", StatusCodes.Status401Unauthorized)
+            : Json(new
+            {
+                families = registry.ModelMatrix(),
+                pricingNote = "各平台采用订阅/积分计费，无公开单 token 单价；本接口仅提供模型能力对比。",
+            }));
+        app.MapGet("/models/matrix", (HttpContext ctx) => !Authorized(ctx)
             ? Error("Unauthorized: missing or bad proxy key", StatusCodes.Status401Unauthorized)
             : Json(new
             {
@@ -73,7 +83,7 @@ public static class AppFactory
             return Json(new { adapters = probes });
         });
 
-        app.MapPost("/v1/chat/completions", async (HttpContext ctx) =>
+        async Task<IResult> HandleChatAsync(HttpContext ctx, bool isResponses)
         {
             if (!Authorized(ctx)) return Error("Unauthorized: missing or bad proxy key", StatusCodes.Status401Unauthorized);
 
@@ -87,6 +97,19 @@ public static class AppFactory
                 body = null;
             }
             if (body is null) return Error("Invalid JSON body", StatusCodes.Status400BadRequest);
+
+            if (body["messages"] is null && body["input"] is not null)
+            {
+                var inputVal = body["input"]?.ToString() ?? "";
+                body["messages"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["role"] = "user",
+                        ["content"] = inputVal
+                    }
+                };
+            }
 
             var model = body["model"]?.GetValue<string>() ?? "auto";
             var resolved = registry.ResolveModel(model);
@@ -110,7 +133,7 @@ public static class AppFactory
                 return Error($"Adapter {adapter.Id} auth failed: {e.Message}", StatusCodes.Status401Unauthorized);
             }
 
-            if (body["stream"] is JsonValue sv && sv.TryGetValue<bool>(out var clientStream) && clientStream)
+            if (body["stream"] is JsonValue sv && sv.TryGetValue<bool>(out var clientStream) && clientStream && !isResponses)
             {
                 // 流式：SSE 直通出口（统一加 [DONE] 收尾）
                 await Sse.StreamResponseAsync(ctx.Response,
@@ -130,13 +153,49 @@ public static class AppFactory
                     usageNode?["prompt_tokens"]?.GetValue<long>(),
                     usageNode?["completion_tokens"]?.GetValue<long>(),
                     result["choices"]?[0]?["message"]?["content"]?.GetValue<string>().Length ?? 0);
+
+                if (isResponses)
+                {
+                    var text = result["choices"]?[0]?["message"]?["content"]?.GetValue<string>() ?? "";
+                    var respObj = new JsonObject
+                    {
+                        ["id"] = result["id"]?.GetValue<string>() ?? $"resp-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
+                        ["object"] = "response",
+                        ["created"] = result["created"]?.GetValue<long>() ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                        ["model"] = model,
+                        ["output"] = new JsonArray
+                        {
+                            new JsonObject
+                            {
+                                ["type"] = "message",
+                                ["role"] = "assistant",
+                                ["content"] = new JsonArray
+                                {
+                                    new JsonObject
+                                    {
+                                        ["type"] = "text",
+                                        ["text"] = text
+                                    }
+                                }
+                            }
+                        },
+                        ["usage"] = usageNode?.DeepClone()
+                    };
+                    return Results.Text(respObj.ToJsonString(), "application/json");
+                }
+
                 return Results.Text(result.ToJsonString(), "application/json");
             }
             catch (Exception e)
             {
                 return Error($"Upstream failed: {e.Message}", StatusCodes.Status502BadGateway);
             }
-        });
+        }
+
+        app.MapPost("/v1/chat/completions", async (HttpContext ctx) => { var r = await HandleChatAsync(ctx, false); await r.ExecuteAsync(ctx); });
+        app.MapPost("/chat/completions", async (HttpContext ctx) => { var r = await HandleChatAsync(ctx, false); await r.ExecuteAsync(ctx); });
+        app.MapPost("/v1/responses", async (HttpContext ctx) => { var r = await HandleChatAsync(ctx, true); await r.ExecuteAsync(ctx); });
+        app.MapPost("/responses", async (HttpContext ctx) => { var r = await HandleChatAsync(ctx, true); await r.ExecuteAsync(ctx); });
 
         return app;
     }

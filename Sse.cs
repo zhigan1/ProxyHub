@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 namespace ProxyHub;
 
 /// <summary>
-/// SSE 统一出口 + 非流式聚合器。对应上游 sse.js。
+/// SSE 统一出口 + 非流式聚合器。
 /// 适配器只负责 emit OpenAI chunk，本模块负责：
 ///   1. 流式：把 chunk 序列化为 `data: {...}\n\n` 写回客户端，收尾补 `data: [DONE]`；
 ///   2. 非流式：把所有 chunk 聚合为单个 chat.completion，上游未给 usage 时按 chars/4 估算。

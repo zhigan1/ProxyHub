@@ -7,7 +7,6 @@ namespace ProxyHub.Adapters;
 /// Qoder（CN）适配器：不走 HTTP API，而是桥接本机 qoderclicn CLI 子进程
 /// （--print --output-format stream-json），把 stream-json 行解析为 OpenAI chunk。
 /// 凭据二选一：qoderclicn login 落盘（~/.qoderworkcn/.auth-cn/user）或环境变量 QODERCN_PERSONAL_ACCESS_TOKEN。
-/// 对应上游 adapters/qoder.js。
 /// </summary>
 public sealed class QoderAdapter : IAdapter
 {
@@ -47,6 +46,82 @@ public sealed class QoderAdapter : IAdapter
 
     public IReadOnlyList<ModelRegistration> RegisterModels() =>
         ModelMap.Select(m => new ModelRegistration(m.ExternalId, m.CliModel)).ToArray();
+
+    /// <summary>
+    /// 动态模型源：调用 qoderclicn --list-models 输出当前账号可用模型。
+    /// 解析采用宽容策略（JSON 段或逐行取模型 token），无法解析或 CLI 缺失则抛错→Registry 回退静态基线。
+    /// </summary>
+    public async Task<IReadOnlyList<ModelRegistration>?> FetchModelsAsync(CancellationToken ct = default)
+    {
+        var launcher = new ProcessStartInfo(_command)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        launcher.ArgumentList.Add("--list-models");
+        if (!string.IsNullOrEmpty(_pat) && !File.Exists(OAuthUserFile))
+            launcher.Environment["QODERCN_PERSONAL_ACCESS_TOKEN"] = _pat;
+
+        using var child = Process.Start(launcher)
+            ?? throw new InvalidOperationException($"无法启动 {_command} 查询模型");
+        var output = await child.StandardOutput.ReadToEndAsync(ct);
+        var err = await child.StandardError.ReadToEndAsync(ct);
+        await child.WaitForExitAsync(ct);
+        if (child.ExitCode != 0)
+            throw new InvalidOperationException($"qoderclicn --list-models exited {child.ExitCode}: {err[..Math.Min(200, err.Length)]}");
+
+        var names = ParseListModelsOutput(output);
+        return names.Count == 0
+            ? null
+            : names.Select(n => new ModelRegistration($"{Id}-{n}", n)).ToList();
+    }
+
+    /// <summary>
+    /// 解析 --list-models 输出：优先整段 JSON 数组/带 model 字段的对象；否则逐行清洗（去表格线/表头/空行）取模型名。
+    /// </summary>
+    public static List<string> ParseListModelsOutput(string output)
+    {
+        var result = new List<string>();
+        var bracket = output.IndexOf('[');
+        if (bracket >= 0)
+        {
+            var end = output.LastIndexOf(']');
+            if (end > bracket)
+            {
+                try
+                {
+                    if (JsonNode.Parse(output[bracket..(end + 1)]) is JsonArray arr)
+                    {
+                        foreach (var item in arr)
+                        {
+                            var name = item is JsonObject obj
+                                ? obj["model"]?.GetValue<string>() ?? obj["id"]?.GetValue<string>()
+                                : (item as JsonValue)?.GetValue<string>();
+                            if (!string.IsNullOrWhiteSpace(name))
+                                result.Add(name.Trim());
+                        }
+                        return result;
+                    }
+                }
+                catch { /* 非 JSON，走行解析 */ }
+            }
+        }
+
+        foreach (var raw in output.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0) continue;
+            if (line is "Model" or "Name" || line.StartsWith("---", StringComparison.Ordinal)) continue;
+            // 去 markdown 表格边线后取首个字段
+            var first = line.Split('|').Select(t => t.Trim()).FirstOrDefault(t => t.Length > 0);
+            if (first is null) continue;
+            if (first.Contains('\t')) first = first.Split('\t')[0];
+            if (first.Length > 0 && !first.Contains(' '))
+                result.Add(first);
+        }
+        return result;
+    }
 
     /// <summary>从 stream-json 单行解析出文本增量；非文本/无文本返回 null。</summary>
     public static string? ParseCliDelta(string line)

@@ -5,7 +5,7 @@ namespace ProxyHub;
 
 /// <summary>
 /// 用量统计：按 适配器+模型+日期 累计请求数与 token。纯内存。
-/// 对应上游 usage.js。上游未返回 usage 时按内容长度估算（chars/4）。
+/// 上游未返回 usage 时按内容长度估算（chars/4）。
 /// </summary>
 public sealed class UsageTracker
 {
