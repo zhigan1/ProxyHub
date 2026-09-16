@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>ProxyHub</RootNamespace>
+    <AssemblyName>ProxyHub</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- 与上游 Node.js 版保持一致：零第三方依赖，仅用 BCL + ASP.NET Core 共享框架 -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 允许测试项目访问 internal 盐值做 tc 加解密往返测试 -->
+    <InternalsVisibleTo Include="ProxyHub.Tests" />
+  </ItemGroup>
+
+</Project>
