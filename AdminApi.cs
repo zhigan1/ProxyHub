@@ -121,6 +121,98 @@ public static class AdminApi
             return Json(new { ok = true });
         });
 
+        // 草稿预览：纯内存展开当前账号/模型状态下的候选链（复用生产 Expand，含账号轮次语义），不落盘
+        app.MapPost("/admin/api/groups/preview", async (HttpContext ctx) =>
+        {
+            if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
+
+            JsonObject? body;
+            try
+            {
+                body = await JsonNode.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted) as JsonObject;
+            }
+            catch { body = null; }
+            if (body is null) return Error("Invalid JSON body", StatusCodes.Status400BadRequest);
+
+            if (body["match"] is not JsonArray matchArr || matchArr.Count == 0)
+                return Error("match 必须为非空数组", StatusCodes.Status400BadRequest);
+            var match = new List<string>();
+            foreach (var m in matchArr)
+            {
+                if (m is not JsonValue mv || !mv.TryGetValue<string>(out var pattern) || string.IsNullOrWhiteSpace(pattern))
+                    return Error("match 必须为非空字符串数组", StatusCodes.Status400BadRequest);
+                match.Add(pattern);
+            }
+
+            var prefer = new List<string>();
+            if (body["prefer"] is JsonArray preferArr)
+                foreach (var p in preferArr)
+                    if (p is JsonValue pv && pv.TryGetValue<string>(out var platform) && !string.IsNullOrWhiteSpace(platform))
+                        prefer.Add(platform);
+
+            var draft = new ModelGroups(new Dictionary<string, GroupConfig>(StringComparer.Ordinal)
+            {
+                ["__preview"] = new GroupConfig { Match = match, Prefer = prefer },
+            });
+            var nodes = draft.Expand("__preview", rt.Registry, rt.Accounts, rt.Adapters);
+
+            return Json(new
+            {
+                candidates = nodes.Count,
+                preview = nodes.Take(50).Select(n => n.Label).ToArray(), // 上限 50 条
+            });
+        });
+
+        // 模型健康矩阵：家族 → 平台 → 模型 / 可用账号数 / 熔断计数；只含统计，不含凭据、路径或 PAT
+        app.MapGet("/admin/api/models/matrix", (HttpContext ctx) =>
+        {
+            if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
+
+            var breakerStats = rt.Breakers.Snapshot()
+                .GroupBy(s => s.Key[..s.Key.IndexOf('|')])
+                .ToDictionary(
+                    g => g.Key,
+                    g => (Open: g.Count(x => x.State == "open"), HalfOpen: g.Count(x => x.State == "half-open")));
+
+            var families = new SortedDictionary<string, SortedDictionary<string, List<string>>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var adapter in rt.Adapters)
+            {
+                foreach (var m in rt.Registry.EffectiveModelsOf(adapter.Id))
+                {
+                    var family = Registry.FamilyOf(m.UpstreamId);
+                    if (!families.TryGetValue(family, out var providers))
+                        families[family] = providers = new(StringComparer.OrdinalIgnoreCase);
+                    if (!providers.TryGetValue(adapter.Id, out var models))
+                        providers[adapter.Id] = models = new List<string>();
+                    if (!models.Contains(m.UpstreamId, StringComparer.OrdinalIgnoreCase)) models.Add(m.UpstreamId);
+                }
+            }
+
+            return Json(new
+            {
+                families = families.Select(f => new
+                {
+                    family = f.Key,
+                    models = f.Value.Values.SelectMany(v => v)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToArray(),
+                    providers = f.Value.ToDictionary(
+                        p => p.Key,
+                        p =>
+                        {
+                            breakerStats.TryGetValue(p.Key, out var stat);
+                            return (object)new
+                            {
+                                models = p.Value.OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToArray(),
+                                availableAccounts = rt.Accounts.AccountsOf(p.Key).Count,
+                                openBreakers = stat.Open,
+                                halfOpenBreakers = stat.HalfOpen,
+                            };
+                        }),
+                }).ToArray(),
+            });
+        });
+
         app.MapGet("/admin/api/accounts", (HttpContext ctx) =>
         {
             if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);

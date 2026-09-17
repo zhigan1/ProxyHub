@@ -137,7 +137,8 @@ public static class AppFactory
 
             if (clientStream)
             {
-                var sink = new SseSink(ctx.Response);
+                // failoverHeader 为热更新配置：每请求读取当前值
+                var sink = new SseSink(ctx.Response, rt.Config.Current.Admin.FailoverHeader);
                 try
                 {
                     var node = await rt.Executor.ExecuteAsync(chain, body, sink, ctx.RequestAborted);

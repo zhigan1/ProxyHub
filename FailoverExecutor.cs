@@ -32,6 +32,7 @@ public interface IChunkSink
 public sealed class SseSink : IChunkSink
 {
     private readonly HttpResponse _response;
+    private readonly bool _failoverHeaderEnabled;
     private bool _done;
 
     public bool Committed { get; private set; }
@@ -39,7 +40,12 @@ public sealed class SseSink : IChunkSink
     public JsonObject? Usage { get; private set; }
     public long ContentChars { get; private set; }
 
-    public SseSink(HttpResponse response) => _response = response;
+    /// <param name="failoverHeaderEnabled">admin.failoverHeader 运行时开关（每请求取当前配置）：false 时不写 X-ProxyHub-Failover。</param>
+    public SseSink(HttpResponse response, bool failoverHeaderEnabled = true)
+    {
+        _response = response;
+        _failoverHeaderEnabled = failoverHeaderEnabled;
+    }
 
     public ValueTask BeginAttemptAsync() => ValueTask.CompletedTask;
 
@@ -47,7 +53,7 @@ public sealed class SseSink : IChunkSink
     {
         if (!Committed)
         {
-            if (FailoverNote is not null)
+            if (FailoverNote is not null && _failoverHeaderEnabled)
                 _response.Headers["X-ProxyHub-Failover"] = Uri.EscapeDataString(FailoverNote); // Kestrel 拒绝非 ASCII 头值
             _response.StatusCode = StatusCodes.Status200OK;
             _response.ContentType = "text/event-stream";
