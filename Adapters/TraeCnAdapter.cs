@@ -18,11 +18,13 @@ public sealed class TraeCnAdapter : TraeAdapterBase
 
     protected override string ChatFunction => "inline_chat";
 
+    protected override string ProfilePattern => "Trae CN*";
+
     protected override string StorageFile { get; }
 
-    public override async Task ChatAsync(JsonObject request, Func<JsonObject, ValueTask> emit, CancellationToken ct = default)
+    public override async Task ChatAsync(JsonObject request, AdapterAccount? account, Func<JsonObject, ValueTask> emit, CancellationToken ct = default)
     {
-        var auth = await GetAuthAsync(ct);
+        var auth = await GetAuthAsync(account, ct);
         var headers = BuildHeaders(auth);
         var body = BuildUpstreamBody(request);
         var model = request["model"]?.GetValue<string>() ?? "";

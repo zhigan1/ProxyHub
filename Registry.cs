@@ -47,6 +47,12 @@ public sealed class Registry
     private IReadOnlyList<ModelRegistration> EffectiveModels(IAdapter adapter) =>
         _dynamic.TryGetValue(adapter.Id, out var dyn) ? dyn : adapter.RegisterModels();
 
+    /// <summary>某适配器当前生效的模型（供分组展开与 admin 预览使用；未知适配器返回空）。</summary>
+    public IReadOnlyList<ModelRegistration> EffectiveModelsOf(string adapterId) =>
+        _adapters.TryGetValue(adapterId, out var adapter)
+            ? (_dynamic.TryGetValue(adapterId, out var dyn) ? dyn : adapter.RegisterModels())
+            : Array.Empty<ModelRegistration>();
+
     /// <summary>某适配器当前生效的模型数量（可配置时从动态表读取，无需私有字段）。</summary>
     public int EffectiveCount(string adapterId) =>
         _dynamic.TryGetValue(adapterId, out var dyn) ? dyn.Count : _external.Count(kv => kv.Value.AdapterId == adapterId);
@@ -80,15 +86,10 @@ public sealed class Registry
         return null;
     }
 
-    /// <summary>对外模型列表：[{ id, object:"model", owned_by }]，仅含当前生效模型。</summary>
-    public IEnumerable<object> ListModels() =>
+    /// <summary>对外模型列表：仅含当前生效模型。虚拟分组模型由 HTTP 层追加（owned_by=proxyhub）。</summary>
+    public IEnumerable<ModelInfo> ListModels() =>
         _adapters.SelectMany(kv => EffectiveModels(kv.Value).Select(m => (AdapterId: kv.Key, Model: m)))
-            .Select(x => new
-            {
-                id = x.Model.ExternalId,
-                @object = "model",
-                owned_by = x.AdapterId,
-            });
+            .Select(x => new ModelInfo(x.Model.ExternalId, x.AdapterId));
 
     private sealed class FamilyBucket
     {

@@ -6,15 +6,13 @@ namespace ProxyHub.Adapters;
 
 /// <summary>
 /// CodeBuddy / WorkBuddy 适配器。
-/// 凭据：自动读取 %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\*.info，自动刷新 token。
+/// 凭据：扫描 %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\*.info 全目录（每个文件=一个账号，桌面端自动刷新 token）。
 /// 协议：copilot.tencent.com/v2 标准 OpenAI SSE，重头模拟 CodeBuddy CLI 客户端。
 /// 模型：支持多层动态发现（本地服务端下发缓存 -> 产品清单 -> CLI 命令行探测），动态优先，静态兜底。
 /// </summary>
 public sealed class CodeBuddyAdapter : IAdapter
 {
     private const string UpstreamBase = "https://copilot.tencent.com/v2";
-
-    private static readonly string[] AuthFiles = BuildAuthFiles();
 
     // 固定请求头模拟：模拟 CLI 客户端，证明是合法的 CodeBuddy CLI 请求
     private static readonly Dictionary<string, string> FixedHeaders = new()
@@ -45,49 +43,97 @@ public sealed class CodeBuddyAdapter : IAdapter
 
     private readonly TimeSpan _timeout;
     private readonly string _cliCommand;
+    private readonly string? _authDirOverride;
 
-    public CodeBuddyAdapter(TimeSpan? timeout = null, string? cliCommand = null)
+    public CodeBuddyAdapter(TimeSpan? timeout = null, string? cliCommand = null, string? authDir = null)
     {
         _timeout = timeout ?? TimeSpan.FromMilliseconds(120_000);
         _cliCommand = cliCommand ?? Environment.GetEnvironmentVariable("CODEBUDDY_CLI") ?? "codebuddy";
+        _authDirOverride = authDir ?? Environment.GetEnvironmentVariable("CODEBUDDY_AUTH_DIR");
     }
 
     public string Id => "codebuddy";
 
-    private static string[] BuildAuthFiles()
+    public static string DefaultAuthDir()
     {
         var local = Environment.GetEnvironmentVariable("LOCALAPPDATA")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "Local");
-        return new[]
-        {
-            Path.Combine(local, "CodeBuddyExtension", "Data", "Public", "auth", "workbuddy-desktop.info"),
-            Path.Combine(local, "CodeBuddyExtension", "Data", "Public", "auth", "Tencent-Cloud.coding-copilot.info"),
-        };
+        return Path.Combine(local, "CodeBuddyExtension", "Data", "Public", "auth");
     }
 
-    /// <summary>读凭据文件 { token, uid }，全部缺失才抛异常（Fail Fast）。</summary>
-    public Task<AuthInfo> GetAuthAsync(CancellationToken ct = default)
+    private string AuthDir => _authDirOverride ?? DefaultAuthDir();
+
+    /// <summary>凭据文件优先级：workbuddy-desktop 最先，其余按文件名稳定排序。</summary>
+    private static int AuthFileRank(string fileName) =>
+        fileName.StartsWith("workbuddy-desktop", StringComparison.OrdinalIgnoreCase) ? 0
+        : fileName.StartsWith("Tencent-Cloud.coding-copilot", StringComparison.OrdinalIgnoreCase) ? 1
+        : 2;
+
+    private IEnumerable<FileInfo> AuthFilesOrdered()
     {
-        foreach (var file in AuthFiles)
+        var files = new List<FileInfo>();
+        try
         {
-            try
-            {
-                var data = JsonNode.Parse(File.ReadAllText(file)) as JsonObject;
-                var token = data?["auth"]?["accessToken"]?.GetValue<string>();
-                var uid = data?["account"]?["uid"]?.ToString();
-                if (!string.IsNullOrEmpty(token) && !string.IsNullOrEmpty(uid))
-                    return Task.FromResult(new AuthInfo(Token: token, Uid: uid));
-            }
-            catch
-            {
-                // 单个文件损坏或读取失败，继续尝试下一个
-            }
+            var dir = new DirectoryInfo(AuthDir);
+            if (dir.Exists)
+                files.AddRange(dir.GetFiles("*.info"));
+        }
+        catch
+        {
+            // 目录不可访问视为无凭据
+        }
+        return files
+            .OrderBy(f => AuthFileRank(f.Name))
+            .ThenBy(f => f.Name, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>枚举全部可用账号：auth 目录下每个含有效 token 的 *.info 文件。</summary>
+    public Task<IReadOnlyList<AdapterAccount>> DiscoverAccountsAsync(CancellationToken ct = default)
+    {
+        var accounts = new List<AdapterAccount>();
+        foreach (var f in AuthFilesOrdered())
+        {
+            if (TryReadAuth(f.FullName, out _, out _))
+                accounts.Add(new AdapterAccount(Id, Path.GetFileNameWithoutExtension(f.Name), f.Name, SourceFile: f.FullName));
+        }
+        return Task.FromResult<IReadOnlyList<AdapterAccount>>(accounts);
+    }
+
+    /// <summary>解析凭据文件为 { token, uid }；损坏/缺失返回 false。</summary>
+    private static bool TryReadAuth(string file, out string? token, out string? uid)
+    {
+        token = uid = null;
+        try
+        {
+            var data = JsonNode.Parse(File.ReadAllText(file)) as JsonObject;
+            token = data?["auth"]?["accessToken"]?.GetValue<string>();
+            uid = data?["account"]?["uid"]?.ToString();
+            return !string.IsNullOrEmpty(token) && !string.IsNullOrEmpty(uid);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>读指定账号凭据；account 为 null 时按优先级取第一个有效文件（Fail Fast）。</summary>
+    public Task<AuthInfo> GetAuthAsync(AdapterAccount? account = null, CancellationToken ct = default)
+    {
+        // 手工账号可能指向不存在的文件：先试账号文件，无效则回落到发现顺序
+        if (account?.SourceFile is { } file && TryReadAuth(file, out var t1, out var u1))
+            return Task.FromResult(new AuthInfo(Token: t1, Uid: u1));
+
+        foreach (var f in AuthFilesOrdered())
+        {
+            if (TryReadAuth(f.FullName, out var t2, out var u2))
+                return Task.FromResult(new AuthInfo(Token: t2, Uid: u2));
         }
         throw new InvalidOperationException("未找到 CodeBuddy/WorkBuddy 登录凭据，请先登录 WorkBuddy 客户端。");
     }
 
     // WorkBuddy 客户端会自动刷新 token 到文件，每次读取即可拿到最新 token
-    public Task<AuthInfo> RefreshAuthAsync(CancellationToken ct = default) => GetAuthAsync(ct);
+    public Task<AuthInfo> RefreshAuthAsync(AdapterAccount? account = null, CancellationToken ct = default) =>
+        GetAuthAsync(account, ct);
 
     public IReadOnlyList<ModelRegistration> RegisterModels() =>
         BaselineModels.Select(m => new ModelRegistration($"codebuddy-{m}", m)).ToArray();
@@ -341,9 +387,9 @@ public sealed class CodeBuddyAdapter : IAdapter
         return true;
     }
 
-    public async Task ChatAsync(JsonObject request, Func<JsonObject, ValueTask> emit, CancellationToken ct = default)
+    public async Task ChatAsync(JsonObject request, AdapterAccount? account, Func<JsonObject, ValueTask> emit, CancellationToken ct = default)
     {
-        var auth = await GetAuthAsync(ct);
+        var auth = await GetAuthAsync(account, ct);
         var headers = new Dictionary<string, string>(FixedHeaders)
         {
             ["Authorization"] = $"Bearer {auth.Token}",
@@ -355,7 +401,8 @@ public sealed class CodeBuddyAdapter : IAdapter
         if ((int)res.StatusCode >= 400)
         {
             var errBody = await res.Content.ReadAsStringAsync(ct);
-            throw new HttpRequestException($"CodeBuddy upstream {(int)res.StatusCode}: {errBody[..Math.Min(200, errBody.Length)]}");
+            throw new UpstreamException((int)res.StatusCode,
+                $"CodeBuddy upstream {(int)res.StatusCode}: {errBody[..Math.Min(200, errBody.Length)]}");
         }
 
         // 行为标准 OpenAI SSE，将 data: 的原始行转发为 chunk（含 usage 字段）

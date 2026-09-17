@@ -6,7 +6,8 @@ namespace ProxyHub.Adapters;
 /// <summary>
 /// Qoder（CN）适配器：不走 HTTP API，而是桥接本机 qoderclicn CLI 子进程
 /// （--print --output-format stream-json），把 stream-json 行解析为 OpenAI chunk。
-/// 凭据二选一：qoderclicn login 落盘（~/.qoderworkcn/.auth-cn/user）或环境变量 QODERCN_PERSONAL_ACCESS_TOKEN。
+/// 账号：qoderclicn login 落盘（~/.qoderworkcn/.auth-cn/user）或环境变量 QODERCN_PERSONAL_ACCESS_TOKEN；
+/// 手工账号可额外录入多把 PAT。
 /// </summary>
 public sealed class QoderAdapter : IAdapter
 {
@@ -35,14 +36,33 @@ public sealed class QoderAdapter : IAdapter
 
     public string Id => "qoder";
 
-    public Task<AuthInfo> GetAuthAsync(CancellationToken ct = default)
+    /// <summary>枚举账号：CLI 落盘 OAuth + PAT 环境变量（手工 PAT 账号由 AccountRegistry 合并）。</summary>
+    public Task<IReadOnlyList<AdapterAccount>> DiscoverAccountsAsync(CancellationToken ct = default)
     {
-        if (File.Exists(OAuthUserFile)) return Task.FromResult(new AuthInfo(OAuth: true));
-        if (!string.IsNullOrEmpty(_pat)) return Task.FromResult(new AuthInfo(Pat: _pat));
+        var accounts = new List<AdapterAccount>();
+        if (File.Exists(OAuthUserFile))
+            accounts.Add(new AdapterAccount(Id, "oauth", "CLI 登录", SourceFile: OAuthUserFile));
+        if (!string.IsNullOrEmpty(_pat))
+            accounts.Add(new AdapterAccount(Id, "pat", "PAT 环境变量", Pat: _pat));
+        return Task.FromResult<IReadOnlyList<AdapterAccount>>(accounts);
+    }
+
+    /// <summary>指定账号优先（PAT 账号直接返回 PAT）；account 为 null 时回落默认（落盘 OAuth → PAT）。</summary>
+    public Task<AuthInfo> GetAuthAsync(AdapterAccount? account = null, CancellationToken ct = default)
+    {
+        if (account?.Pat is not null)
+            return Task.FromResult(new AuthInfo(Pat: account.Pat));
+        if (account?.SourceFile is not null && File.Exists(account.SourceFile))
+            return Task.FromResult(new AuthInfo(OAuth: true));
+        if (File.Exists(OAuthUserFile))
+            return Task.FromResult(new AuthInfo(OAuth: true));
+        if (!string.IsNullOrEmpty(_pat))
+            return Task.FromResult(new AuthInfo(Pat: _pat));
         throw new InvalidOperationException("Qoder: 既无 qoderclicn login 落盘凭据，也无 QODERCN_PERSONAL_ACCESS_TOKEN");
     }
 
-    public Task<AuthInfo> RefreshAuthAsync(CancellationToken ct = default) => GetAuthAsync(ct);
+    public Task<AuthInfo> RefreshAuthAsync(AdapterAccount? account = null, CancellationToken ct = default) =>
+        GetAuthAsync(account, ct);
 
     public IReadOnlyList<ModelRegistration> RegisterModels() =>
         ModelMap.Select(m => new ModelRegistration(m.ExternalId, m.CliModel)).ToArray();
@@ -144,9 +164,9 @@ public sealed class QoderAdapter : IAdapter
         return string.IsNullOrEmpty(text) ? null : text;
     }
 
-    public async Task ChatAsync(JsonObject request, Func<JsonObject, ValueTask> emit, CancellationToken ct = default)
+    public async Task ChatAsync(JsonObject request, AdapterAccount? account, Func<JsonObject, ValueTask> emit, CancellationToken ct = default)
     {
-        await GetAuthAsync(ct);
+        var auth = await GetAuthAsync(account, ct);
 
         var model = request["model"]?.GetValue<string>() ?? "Qwen3.7-Max";
         var messages = request["messages"] as JsonArray ?? new JsonArray();
@@ -176,8 +196,10 @@ public sealed class QoderAdapter : IAdapter
         }
         psi.ArgumentList.Add("--");
         psi.ArgumentList.Add(userMsg);
-        // 有落盘 OAuth 凭据则以其为准；否则注入 PAT
-        if (!string.IsNullOrEmpty(_pat) && !File.Exists(OAuthUserFile))
+        // PAT 账号强制注入本账号令牌；无账号指定时回落到构造期 PAT（且落盘 OAuth 不存在）
+        if (auth.Pat is not null)
+            psi.Environment["QODERCN_PERSONAL_ACCESS_TOKEN"] = auth.Pat;
+        else if (!string.IsNullOrEmpty(_pat) && !File.Exists(OAuthUserFile))
             psi.Environment["QODERCN_PERSONAL_ACCESS_TOKEN"] = _pat;
 
         using var child = Process.Start(psi)
@@ -210,7 +232,8 @@ public sealed class QoderAdapter : IAdapter
         if (child.ExitCode != 0)
         {
             var stderr = await stderrTask;
-            throw new InvalidOperationException($"qoderclicn exited {child.ExitCode}: {stderr[..Math.Min(300, stderr.Length)]}");
+            throw new UpstreamException(502,
+                $"qoderclicn exited {child.ExitCode}: {stderr[..Math.Min(300, stderr.Length)]}");
         }
 
         await emit(new JsonObject

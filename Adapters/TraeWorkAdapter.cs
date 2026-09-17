@@ -27,23 +27,25 @@ public sealed class TraeWorkAdapter : TraeAdapterBase
 
     protected override string ChatFunction => "solo_work_lite";
 
+    protected override string ProfilePattern => "TRAE SOLO CN*";
+
     protected override string StorageFile { get; }
 
     /// <summary>
     /// 持久刷新：优先用 refreshToken 调 ExchangeToken 换新 token 并写回缓存（50 分钟 TTL）；
     /// 无 refreshToken 时退回重读磁盘（桌面端若在线会更新文件）。
     /// </summary>
-    public override async Task<AuthInfo> RefreshAuthAsync(CancellationToken ct = default)
+    public override async Task<AuthInfo> RefreshAuthAsync(AdapterAccount? account = null, CancellationToken ct = default)
     {
-        var current = await GetAuthAsync(ct);
+        var current = await GetAuthAsync(account, ct);
         if (current.RefreshToken is null)
         {
-            Cache.Invalidate("auth");
-            return await GetAuthAsync(ct);
+            Cache.Invalidate("auth:" + (account?.SourceFile ?? "default"));
+            return await GetAuthAsync(account, ct);
         }
 
         var fresh = await ExchangeTokenAsync(current.RefreshToken, current.UserId, ct);
-        Cache.Set("auth", fresh, DateTimeOffset.UtcNow.AddMinutes(50));
+        Cache.Set("auth:" + (account?.SourceFile ?? "default"), fresh, DateTimeOffset.UtcNow.AddMinutes(50));
         return fresh;
     }
 
@@ -61,7 +63,8 @@ public sealed class TraeWorkAdapter : TraeAdapterBase
         using var res = await UpstreamHttp.PostJsonAsync(url, new Dictionary<string, string>(), body, Timeout, ct);
         var text = await res.Content.ReadAsStringAsync(ct);
         if ((int)res.StatusCode >= 400)
-            throw new HttpRequestException($"TraeWork ExchangeToken failed: {(int)res.StatusCode} {text[..Math.Min(200, text.Length)]}");
+            throw new UpstreamException((int)res.StatusCode,
+                $"TraeWork ExchangeToken failed: {(int)res.StatusCode} {text[..Math.Min(200, text.Length)]}");
 
         var data = JsonNode.Parse(text) as JsonObject;
         var token = data?["token"]?.GetValue<string>()
@@ -75,9 +78,9 @@ public sealed class TraeWorkAdapter : TraeAdapterBase
     }
 
     /// <summary>对话：401/403 时自动刷新一次凭据并重试，其余错误直接穿透所有候选端点。</summary>
-    public override async Task ChatAsync(JsonObject request, Func<JsonObject, ValueTask> emit, CancellationToken ct = default)
+    public override async Task ChatAsync(JsonObject request, AdapterAccount? account, Func<JsonObject, ValueTask> emit, CancellationToken ct = default)
     {
-        var auth = await GetAuthAsync(ct);
+        var auth = await GetAuthAsync(account, ct);
         var headers = BuildHeaders(auth);
         var body = BuildUpstreamBody(request);
         var model = request["model"]?.GetValue<string>() ?? "";
@@ -93,7 +96,7 @@ public sealed class TraeWorkAdapter : TraeAdapterBase
 
         if (sawAuthError)
         {
-            var fresh = await RefreshAuthAsync(ct);
+            var fresh = await RefreshAuthAsync(account, ct);
             headers["Authorization"] = $"Cloud-IDE-JWT {fresh.Token}";
             headers["X-Cloudide-Token"] = fresh.Token!;
             foreach (var ep in ChatEndpoints)

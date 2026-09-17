@@ -39,19 +39,24 @@ public static class Sse
         }
     }
 
-    /// <summary>非流式：完整跑完适配器，把 chunk 聚合成单个 chat.completion 对象。</summary>
+    /// <summary>非流式：完整跑完适配器，把 chunk 聚合为单个 chat.completion 对象。</summary>
     public static async Task<JsonObject> CollectNonStreamingAsync(
         IAdapter adapter,
         JsonObject body,
         CancellationToken ct = default)
     {
         var chunks = new List<JsonObject>();
-        await adapter.ChatAsync(body, chunk =>
+        await adapter.ChatAsync(body, null, chunk =>
         {
             chunks.Add(chunk);
             return ValueTask.CompletedTask;
         }, ct);
+        return Aggregate(chunks, body);
+    }
 
+    /// <summary>把已收集的 chunk 序列聚合为单个 chat.completion（故障转移链成功后调用）。</summary>
+    public static JsonObject Aggregate(IReadOnlyList<JsonObject> chunks, JsonObject? request)
+    {
         var content = new System.Text.StringBuilder();
         string? finishReason = null;
         string id = "chatcmpl-" + Guid.NewGuid().ToString("N")[..8];
@@ -76,7 +81,7 @@ public static class Sse
         {
             usage = new JsonObject
             {
-                ["prompt_tokens"] = EstimatePromptTokens(body?["messages"] as JsonArray),
+                ["prompt_tokens"] = EstimatePromptTokens(request?["messages"] as JsonArray),
                 ["completion_tokens"] = (long)Math.Ceiling(content.Length / 4.0),
             };
         }
