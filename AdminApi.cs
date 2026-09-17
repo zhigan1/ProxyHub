@@ -302,9 +302,9 @@ public static class AdminApi
 
     private static IResult ServeHtml()
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "wwwroot", "admin.html");
-        if (!File.Exists(path))
-            return Results.Text("admin.html 缺失（构建产物未包含 wwwroot）。", "text/plain");
-        return Results.File(path, "text/html; charset=utf-8");
+        var stream = typeof(AdminApi).Assembly.GetManifestResourceStream("ProxyHub.wwwroot.admin.html");
+        if (stream is null)
+            return Results.Problem("admin.html 资源缺失（程序集未嵌入 ProxyHub.wwwroot.admin.html）。", statusCode: StatusCodes.Status500InternalServerError);
+        return Results.Stream(stream, "text/html; charset=utf-8");
     }
 }

@@ -16,8 +16,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 管理页单文件（自包含 HTML，无构建步骤/无 CDN 依赖） -->
-    <None Include="wwwroot\admin.html" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 管理页单文件嵌入资源（构建产物无需磁盘 wwwroot 目录） -->
+    <EmbeddedResource Include="wwwroot\admin.html" LogicalName="ProxyHub.wwwroot.admin.html" />
   </ItemGroup>
 
 </Project>
