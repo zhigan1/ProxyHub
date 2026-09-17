@@ -25,7 +25,7 @@ button.primary{background:#2b4a6e;border-color:var(--acc)}
 button.danger{border-color:var(--err);color:var(--err)}
 button.small{padding:2px 10px;font-size:12px}
 input,select,textarea{background:var(--bg2);border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:6px 10px;font-size:13px;font-family:inherit}
-input:focus,textarea:focus{outline:none;border-color:var(--acc)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc)}
 .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:18px;flex-wrap:wrap}
 .tab{padding:8px 16px;cursor:pointer;color:var(--dim);border-bottom:2px solid transparent;font-size:13px}
 .tab:hover{color:var(--fg)}
@@ -59,7 +59,7 @@ canvas{width:100%;height:160px;background:var(--bg3);border-radius:6px}
 .modal h2{font-size:15px;margin-bottom:14px}
 .field{margin-bottom:12px}
 .field label{display:block;margin-bottom:4px}
-.field input{width:100%}
+.field input,.field select{width:100%}
 .preview{background:var(--bg);border:1px dashed var(--line);border-radius:6px;padding:10px;font-family:var(--mono);font-size:12px;color:var(--dim);max-height:180px;overflow:auto;margin-top:6px}
 .toast{position:fixed;bottom:20px;right:20px;background:var(--bg3);border:1px solid var(--ok);color:var(--ok);padding:8px 16px;border-radius:6px;font-size:13px;z-index:98;animation:fade 3s forwards}
 .toast.err{border-color:var(--err);color:var(--err)}
@@ -199,20 +199,30 @@ async function renderModels(){
   const el = document.getElementById('content');
   el.innerHTML = '<div class="card hint">加载中…</div>';
   try{
-    const [mx, ms] = await Promise.all([api('/v1/models/matrix'), api('/v1/models')]);
+    const [mx, ms] = await Promise.all([api('/admin/api/models/matrix'), api('/v1/models')]);
     const groups = (ms.data||[]).filter(m=>m.owned_by==='proxyhub').map(m=>m.id);
-    const families = mx.families||{};
+    const families = mx.families||[];
     el.innerHTML = `
       <div class="card"><h3>虚拟分组（在 OpenAI 客户端 model 字段直接填写即可）</h3>
         ${groups.map(g=>`<span class="pill dim mono" style="margin:2px 6px 2px 0">${esc(g)}</span>`).join('')}
       </div>
-      <div class="card"><h3>模型能力矩阵（按家族分组，共 ${Object.keys(families).length} 家族 / ${ms.data.length} 模型）</h3>
-      ${Object.entries(families).map(([fam,v])=>`
-        <div style="margin-bottom:12px"><b class="mono">${esc(fam)}</b>
-        <table><thead><tr><th>平台</th><th>模型</th></tr></thead><tbody>
-        ${Object.entries(v.providers).map(([ad,models])=>`<tr><td class="mono">${esc(ad)}</td><td class="mono">${models.map(esc).join(' · ')}</td></tr>`).join('')}
+      <div class="card"><h3>模型健康矩阵（共 ${families.length} 家族 / ${(ms.data||[]).length} 模型）</h3>
+      ${families.map(f=>`
+        <div style="margin-bottom:14px"><b class="mono">${esc(f.family)}</b>
+        <table><thead><tr><th>平台</th><th>可用账号</th><th>熔断状态</th><th>支持模型</th></tr></thead><tbody>
+        ${Object.entries(f.providers||{}).map(([ad, p])=>{
+          let bkBadge = '<span class="pill ok">正常</span>';
+          if(p.openBreakers > 0) bkBadge = `<span class="pill err">${p.openBreakers} open</span>`;
+          else if(p.halfOpenBreakers > 0) bkBadge = `<span class="pill warn">${p.halfOpenBreakers} half-open</span>`;
+          return `<tr>
+            <td class="mono">${esc(ad)}</td>
+            <td><span class="mono">${p.availableAccounts}</span></td>
+            <td>${bkBadge}</td>
+            <td class="mono">${(p.models||[]).map(esc).join(' · ')}</td>
+          </tr>`;
+        }).join('')}
         </tbody></table></div>`).join('')}
-      <p class="hint">${esc(mx.pricingNote||'')}</p></div>`;
+      </div>`;
   }catch(e){ el.innerHTML = `<div class="card" style="color:var(--err)">${esc(e.message)}</div>`; }
 }
 
@@ -243,31 +253,81 @@ async function renderGroups(){
       : '<div class="card hint">尚无分组。默认分组（auto / auto-flash / auto-pro / auto-glm）仅在 config.json 未定义 groups 段时自动生效；删除后可手工重建。</div>';
   }catch(e){ el.innerHTML = `<div class="card" style="color:var(--err)">${esc(e.message)}</div>`; }
 }
+
 function editGroup(name){
-  const g = name ? '' : '';
   const div = document.createElement('div'); div.className='modal';
   div.innerHTML = `<div class="box"><h2>${name?'编辑分组 '+esc(name):'新建分组'}</h2>
     <div class="field"><label>分组名（即客户端 model 字段值）</label><input id="gname" value="${esc(name||'auto-xxx')}" ${name?'disabled':''}></div>
     <div class="field"><label>match 模式（逗号分隔，* 通配，作用于当前生效模型表）</label><input id="gmatch" placeholder="*-flash, *-turbo"></div>
     <div class="field"><label>平台优先级（逗号分隔，留空按注册顺序）</label><input id="gprefer" placeholder="codebuddy, traecn, traework, qoder"></div>
     <div class="field"><label>说明</label><input id="gdesc" placeholder="速度优先：全部 flash 档模型自动切换"></div>
-    <div class="row" style="justify-content:flex-end"><button onclick="this.closest('.modal').remove()">取消</button>
+    <div class="field"><label>候选链实时预览</label>
+      <div id="gpreview" class="preview">输入 match 模式以预览候选链…</div>
+      <div id="gerr" class="hint" style="color:var(--err);margin-top:4px"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:14px"><button onclick="this.closest('.modal').remove()">取消</button>
       <button class="primary" onclick="saveGroup('${esc(name||'')}')">保存</button></div></div>`;
   document.body.appendChild(div);
+
+  let timer = null;
+  const schedulePreview = () => {
+    clearTimeout(timer);
+    timer = setTimeout(fetchPreview, 200);
+  };
+
+  async function fetchPreview(){
+    const matchEl = document.getElementById('gmatch');
+    const preferEl = document.getElementById('gprefer');
+    const previewEl = document.getElementById('gpreview');
+    const errEl = document.getElementById('gerr');
+    if(!matchEl || !previewEl || !errEl) return;
+
+    const match = matchEl.value.split(',').map(s=>s.trim()).filter(Boolean);
+    const prefer = preferEl.value.split(',').map(s=>s.trim()).filter(Boolean);
+
+    if(!match.length){
+      errEl.textContent = '';
+      previewEl.innerHTML = '<span class="hint">输入 match 模式以预览候选链…</span>';
+      return;
+    }
+
+    try{
+      const res = await api('/admin/api/groups/preview', {
+        method: 'POST',
+        body: JSON.stringify({ match, prefer })
+      });
+      errEl.textContent = '';
+      if(res.preview && res.preview.length){
+        previewEl.innerHTML = res.preview.map(esc).join(' &rarr; ') + (res.candidates > res.preview.length ? ` <span class="hint">(共 ${res.candidates} 个)</span>` : '');
+      } else {
+        previewEl.innerHTML = '<span class="hint">未匹配到可用候选节点</span>';
+      }
+    }catch(e){
+      errEl.textContent = e.message || '预览请求失败';
+      previewEl.innerHTML = '<span class="hint">预览不可用</span>';
+    }
+  }
+
+  document.getElementById('gmatch').addEventListener('input', schedulePreview);
+  document.getElementById('gprefer').addEventListener('input', schedulePreview);
+
   if(name){
     api('/admin/api/groups').then(d=>{
       const g=(d.groups||[]).find(x=>x.name===name); if(!g) return;
       document.getElementById('gmatch').value=g.match.join(', ');
       document.getElementById('gprefer').value=g.prefer.join(', ');
       document.getElementById('gdesc').value=g.description||'';
+      fetchPreview();
     });
   }
 }
+
 async function saveGroup(name){
   const gname = name || document.getElementById('gname').value.trim();
   const match = document.getElementById('gmatch').value.split(',').map(s=>s.trim()).filter(Boolean);
   const prefer = document.getElementById('gprefer').value.split(',').map(s=>s.trim()).filter(Boolean);
   const description = document.getElementById('gdesc').value.trim();
+  if(!gname) return toast('分组名不能为空',true);
   if(!match.length) return toast('match 模式不能为空',true);
   try{
     await api('/admin/api/groups/'+encodeURIComponent(gname),{method:'PUT',body:JSON.stringify({match,prefer,description})});
@@ -288,7 +348,8 @@ async function renderAccounts(){
     const d = await api('/admin/api/accounts');
     el.innerHTML = `
       <div class="row">
-        <button class="primary" onclick="refreshAccounts()">重新扫描本机账号</button>
+        <button class="primary" onclick="addAccountModal()">＋ 手工添加账号</button>
+        <button onclick="refreshAccounts()">重新扫描本机账号</button>
         <button class="danger" onclick="resetAll()">复位全部熔断</button>
         <span class="hint">多账号用于熔断后自动切号。同平台多账号高频并发可能触发平台风控，请自行评估。</span>
       </div>
@@ -312,6 +373,103 @@ async function refreshAccounts(){
   }catch(e){ toast(e.message,true); }
 }
 
+/* ─────────── Manual Account Modal ─────────── */
+function addAccountModal(){
+  const div = document.createElement('div'); div.className='modal';
+  div.innerHTML = `<div class="box"><h2>添加手工账号</h2>
+    <div class="field"><label>适配器平台</label>
+      <select id="acc_adapter" onchange="onAccountAdapterChange()">
+        <option value="codebuddy">CodeBuddy (codebuddy)</option>
+        <option value="traecn">TraeCN (traecn)</option>
+        <option value="traework">TraeWork (traework)</option>
+        <option value="qoder">Qoder (qoder)</option>
+      </select>
+    </div>
+    <div class="field"><label>账号标签 (label)</label>
+      <input id="acc_label" placeholder="例如：work-1, backup-account">
+    </div>
+    <div class="field" id="acc_field_box">
+      <label id="acc_val_label">凭据文件路径 (authFile)</label>
+      <input id="acc_val" placeholder="例如：C:\\Users\\admin\\AppData\\Roaming\\CodeBuddy\\auth.json">
+    </div>
+    <div id="acc_err" class="hint" style="color:var(--err);margin-bottom:8px"></div>
+    <div class="row" style="justify-content:flex-end">
+      <button onclick="this.closest('.modal').remove()">取消</button>
+      <button class="primary" onclick="saveManualAccount()">保存账号</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  onAccountAdapterChange();
+}
+
+function onAccountAdapterChange(){
+  const ad = document.getElementById('acc_adapter')?.value;
+  const lbl = document.getElementById('acc_val_label');
+  const input = document.getElementById('acc_val');
+  if(!ad || !lbl || !input) return;
+  input.value = '';
+  if(ad === 'codebuddy'){
+    lbl.textContent = '凭据文件路径 (authFile)';
+    input.type = 'text';
+    input.placeholder = '例如：C:\\Users\\admin\\...\\auth.json';
+  } else if(ad === 'traecn' || ad === 'traework'){
+    lbl.textContent = '存储数据库路径 (storageFile)';
+    input.type = 'text';
+    input.placeholder = '例如：C:\\Users\\admin\\...\\state.vscdb';
+  } else if(ad === 'qoder'){
+    lbl.textContent = '个人访问令牌 (pat)';
+    input.type = 'password';
+    input.placeholder = '个人访问令牌 PAT（保存后自动脱敏）';
+  }
+}
+
+async function saveManualAccount(){
+  const ad = document.getElementById('acc_adapter')?.value;
+  const label = document.getElementById('acc_label')?.value.trim();
+  const val = document.getElementById('acc_val')?.value.trim();
+  const errEl = document.getElementById('acc_err');
+  if(!label){ errEl.textContent = '账号标签不能为空'; return; }
+  if(!val){
+    if(ad === 'codebuddy') errEl.textContent = 'authFile 路径不能为空';
+    else if(ad === 'qoder') errEl.textContent = 'PAT 不能为空';
+    else errEl.textContent = 'storageFile 路径不能为空';
+    return;
+  }
+
+  const newAcc = { label };
+  if(ad === 'codebuddy') newAcc.authFile = val;
+  else if(ad === 'traecn' || ad === 'traework') newAcc.storageFile = val;
+  else if(ad === 'qoder') newAcc.pat = val;
+
+  try{
+    const d = await api('/admin/api/config');
+    const accounts = d.config?.accounts || {};
+    accounts[ad] = [...(accounts[ad] || []), newAcc];
+    await api('/admin/api/config', { method: 'PUT', body: JSON.stringify({ accounts }) });
+    toast('账号已保存并热更新');
+    document.querySelector('.modal')?.remove();
+    render();
+  }catch(e){
+    errEl.textContent = e.message || '保存失败';
+  }
+}
+
+async function delManualAccount(adapter, index){
+  if(!confirm(`确认删除平台 ${adapter} 的第 ${index+1} 个手工账号？`)) return;
+  try{
+    const d = await api('/admin/api/config');
+    const accounts = d.config?.accounts || {};
+    if(accounts[adapter] && accounts[adapter][index]){
+      accounts[adapter].splice(index, 1);
+      await api('/admin/api/config', { method: 'PUT', body: JSON.stringify({ accounts }) });
+      toast('手工账号已删除并热更新');
+      render();
+    }
+  }catch(e){
+    toast(e.message, true);
+  }
+}
+
 /* ─────────── Config ─────────── */
 async function renderConfig(){
   const el = document.getElementById('content');
@@ -319,6 +477,18 @@ async function renderConfig(){
   try{
     const d = await api('/admin/api/config');
     const c = d.config||{};
+    const groups = c.groups || {};
+    const accounts = c.accounts || {};
+    const groupList = Object.entries(groups);
+    const manualAccList = [];
+    for(const [ad, list] of Object.entries(accounts)){
+      if(Array.isArray(list)){
+        list.forEach((acc, idx) => {
+          manualAccList.push({ adapter: ad, index: idx, ...acc });
+        });
+      }
+    }
+
     el.innerHTML = `
       <div class="card"><h3>基础配置（保存即热更新，写回 config.json）</h3>
         <div class="form2">
@@ -339,12 +509,51 @@ async function renderConfig(){
         <div class="field"><label>启用 /admin</label><label><input type="checkbox" id="c_adminOn" ${c.admin?.enabled!==false?'checked':''}> 允许访问管理页</label></div>
         <div class="field"><label>切换标记头</label><label><input type="checkbox" id="c_foHeader" ${c.admin?.failoverHeader!==false?'checked':''}> 响应头 X-ProxyHub-Failover 标注切换路径</label></div>
       </div></div>
-      <div class="row"><button class="primary" onclick="saveConfig()">保存配置</button>
+      <div class="row"><button class="primary" onclick="saveConfig()">保存基础/熔断/管理页配置</button>
         <span class="hint">配置文件：<code>${esc(d.path)}</code></span></div>
-      <div class="card"><h3>当前完整配置（只读快照）</h3><pre id="rawcfg"></pre></div>`;
-    document.getElementById('rawcfg').textContent = JSON.stringify(c,null,2);
+
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <h3 style="margin-bottom:0">结构化分组配置（GROUPS）</h3>
+          <button class="small primary" onclick="editGroup()">＋ 新建分组</button>
+        </div>
+        ${groupList.length ? `
+          <table><thead><tr><th>分组名</th><th>match 模式</th><th>平台优先级</th><th>说明</th><th></th></tr></thead><tbody>
+          ${groupList.map(([name, g])=>`<tr>
+            <td class="mono">${esc(name)}</td>
+            <td class="mono">${Array.isArray(g.match)?g.match.map(esc).join(', '):esc(g.match||'')}</td>
+            <td class="mono">${Array.isArray(g.prefer)&&g.prefer.length?g.prefer.map(esc).join(' &rarr; '):'<span class="hint">默认</span>'}</td>
+            <td class="hint">${esc(g.description||'-')}</td>
+            <td><button class="small" onclick="editGroup('${esc(name)}')">编辑</button>
+                <button class="small danger" onclick="delGroup('${esc(name)}')">删除</button></td>
+          </tr>`).join('')}
+          </tbody></table>
+        ` : '<div class="hint">暂无显式分组配置（当前生效默认 auto / auto-flash / auto-pro / auto-glm 分组）。</div>'}
+      </div>
+
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <h3 style="margin-bottom:0">结构化账号配置（ACCOUNTS）</h3>
+          <button class="small primary" onclick="addAccountModal()">＋ 添加手工账号</button>
+        </div>
+        ${manualAccList.length ? `
+          <table><thead><tr><th>平台</th><th>标签</th><th>凭据配置</th><th></th></tr></thead><tbody>
+          ${manualAccList.map(acc=>`<tr>
+            <td class="mono">${esc(acc.adapter)}</td>
+            <td class="mono">${esc(acc.label)}</td>
+            <td class="mono">${acc.authFile ? 'authFile: '+esc(acc.authFile) : acc.storageFile ? 'storageFile: '+esc(acc.storageFile) : acc.pat ? 'pat: ******' : '-'}</td>
+            <td><button class="small danger" onclick="delManualAccount('${esc(acc.adapter)}', ${acc.index})">删除</button></td>
+          </tr>`).join('')}
+          </tbody></table>
+        ` : '<div class="hint">暂无手工录入账号，适配器默认使用本机自动发现凭据。</div>'}
+      </div>
+
+      <div class="card"><h3>当前完整配置（诊断只读展示）</h3><pre id="rawcfg"></pre></div>`;
+
+    document.getElementById('rawcfg').textContent = JSON.stringify(maskPat(c),null,2);
   }catch(e){ el.innerHTML = `<div class="card" style="color:var(--err)">${esc(e.message)}</div>`; }
 }
+
 async function saveConfig(){
   const body = {
     port: +document.getElementById('c_port').value||8265,
@@ -370,6 +579,20 @@ async function saveConfig(){
 /* ─────────── helpers ─────────── */
 function esc(s){ return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 function fmt(n){ return n>=1e6?(n/1e6).toFixed(1)+'M' : n>=1e3?(n/1e3).toFixed(1)+'k' : String(n); }
+function maskPat(obj){
+  if(!obj || typeof obj !== 'object') return obj;
+  const copy = JSON.parse(JSON.stringify(obj));
+  if(copy.accounts && typeof copy.accounts === 'object'){
+    for(const ad in copy.accounts){
+      if(Array.isArray(copy.accounts[ad])){
+        copy.accounts[ad].forEach(acc => {
+          if(acc && acc.pat) acc.pat = '******';
+        });
+      }
+    }
+  }
+  return copy;
+}
 
 async function render(){
   if(TAB==='overview') await renderOverview();
@@ -382,8 +605,12 @@ async function render(){
 /* ─────────── boot ─────────── */
 renderTabs();
 (async()=>{
-  try{ await api('/health'); render(); }
-  catch(e){ showKeybar(); }
+  try{
+    await api('/admin/api/overview');
+    render();
+  }catch(e){
+    showKeybar();
+  }
 })();
 </script>
 </body>
