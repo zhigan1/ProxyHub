@@ -136,9 +136,11 @@ dotnet run --project ProxyHub
 | POST | `/v1/responses` | Responses API 兼容出口 | 可选 |
 | GET | `/usage` | 各平台用量统计 | 可选 |
 | GET | `/status` | 各适配器就绪状态（Fail-Fast 探测） | 可选 |
-| GET | `/admin` | 可视化管理页（单文件 HTML） | 复用代理密钥 |
+| GET | `/admin` | 可视化管理页（单文件 HTML，程序集嵌入资源交付） | 复用代理密钥 |
 | GET | `/admin/api/overview` | 总览：适配器 / 账号 / 模型数 / 用量 / 熔断 | 复用代理密钥 |
 | GET | `/admin/api/groups` | 分组列表查询（含候选链展开预览，热生效） | 复用代理密钥 |
+| POST | `/admin/api/groups/preview` | 分组草稿纯内存展开预览（不写 config.json） | 复用代理密钥 |
+| GET | `/admin/api/models/matrix` | 模型健康矩阵：家族 × 平台的可用账号数与熔断状态 | 复用代理密钥 |
 | PUT / DELETE | `/admin/api/groups/{name}` | 分组新增修改 / 删除（热生效） | 复用代理密钥 |
 | GET | `/admin/api/accounts` | 账号池 + 账号级熔断状态 | 复用代理密钥 |
 | POST | `/admin/api/accounts/refresh` | 重新扫描本机账号 | 复用代理密钥 |
@@ -187,9 +189,9 @@ curl -X POST http://127.0.0.1:8265/v1/chat/completions \
 分组是叠加在真实模型之上的虚拟模型 ID（`/v1/models` 中 `owned_by=proxyhub`），请求 `"model": "auto-flash"` 时按以下顺序展开候选链：
 
 ```
-prefer 平台序（未列出的平台按注册顺序殿后）
-  → 平台内匹配模型按名字典序
-    → 每个模型 × 该平台全部账号（自动发现默认账号在前，手工账号殿后）
+账号轮次（先跨平台把各平台第 1 账号全部试完，全部失败后才进入第 2 轮备用账号）
+  → 轮内按 prefer 平台序（未列出的平台按注册顺序殿后，Qoder 注册最后、每轮殿后）
+    → 同平台同账号内匹配模型按名字典序（稳定、可预测）
 ```
 
 - `match` 通配作用于各平台**当前生效模型表**（动态拉取优先），平台新增模型自动被分组收录，无需改配置。
@@ -231,17 +233,18 @@ prefer 平台序（未列出的平台按注册顺序殿后）
 浏览器打开 `http://127.0.0.1:8265/admin`（鉴权复用代理密钥：`Authorization: Bearer …` 或 `x-api-key …`）：
 
 - **总览**：适配器就绪状态 / 账号数 / 模型数 / 今日用量 / 熔断快照与趋势图
-- **模型矩阵**：跨平台模型家族能力矩阵对比
-- **分组管理**：支持虚拟分组 CRUD（创建、查询、修改、删除）与候选链展开预览
-- **账号 / 熔断**：账号池查看、重新扫描本机账号、节点级/全量熔断复位
-- **配置**：读取与顶层键合并写回 config.json（热生效）
+- **模型矩阵**：跨平台模型家族能力矩阵，附行级可用账号数与熔断状态（Open / Half-Open）统计（`/admin/api/models/matrix`）
+- **分组管理**：支持虚拟分组 CRUD 与编辑弹窗内草稿实时预览（约 200ms 防抖提交 `/admin/api/groups/preview`，纯内存展开不落盘，校验错误内联展示）
+- **账号 / 熔断**：账号池查看、表单化手工添加账号（CodeBuddy=`authFile`、Trae 系=`storageFile`、Qoder=`pat`）、重新扫描本机账号、节点级/全量熔断复位
+- **配置**：读取与顶层键合并写回 config.json（热生效），支持结构化 groups / accounts 编辑；原始 JSON 仅作诊断输出，PAT 自动脱敏（`******`）且不回填输入框
 
-页面由程序根目录下的磁盘静态文件 `wwwroot/admin.html` 提供（自包含单文件 HTML，无构建、无 CDN 依赖），`admin.enabled=false` 可整体关闭页面访问（数据端点不受影响）。
+页面以嵌入资源形式随程序集交付（`EmbeddedResource`，LogicalName `ProxyHub.wwwroot.admin.html`；自包含单文件 HTML，无构建、无 CDN 依赖），运行时不再依赖磁盘 `wwwroot` 目录，`admin.enabled=false` 可整体关闭页面访问（数据端点不受影响）。
 
-> **当前实现说明与延期项**：
-> - **托管方式**：当前由磁盘文件 `wwwroot/admin.html` 提供，嵌入资源随 DLL 打包延期至后续迭代。
-> - **已支持能力**：总览看板、虚拟分组 CRUD、账号刷新、熔断复位（`POST /admin/api/breakers/reset`）、顶层配置合并写回。
-> - **延期能力**：模型矩阵行级熔断与可用账号数监控、分组编辑弹窗内实时动态匹配预览、账号管理表单化手工添加等富表单 UI 交互已延期。
+> **已交付的 P3 能力**：
+> - **嵌入式单页交付**：`admin.html` 打包进程序集清单资源，发布产物无需磁盘 `wwwroot` 目录即可访问 `/admin`。
+> - **模型健康矩阵**：`GET /admin/api/models/matrix` 提供家族 / 平台维度的可用账号数与熔断（Open / Half-Open）状态统计。
+> - **分组草稿预览**：`POST /admin/api/groups/preview` 在内存中展开未保存的 match / prefer 草稿，所见即所得后再保存。
+> - **结构化配置与 PAT 脱敏**：分组 / 账号结构化表单编辑，PAT 仅用于保存，展示时自动脱敏且不回填输入框。
 
 ## 多人使用与负载均衡（方案）
 
@@ -339,7 +342,7 @@ ProxyHub/
   TcCrypto.cs                本地加密凭据解密（AES-128-CBC + SHA-512 完整性校验）
   UpstreamHttp.cs            共享传输层：连接池 + 增量 SSE 行解析
   IAdapter.cs                适配器契约
-  wwwroot/admin.html         可视化管理页（自包含单文件）
+  wwwroot/admin.html         可视化管理页（自包含单文件，以嵌入资源随程序集交付）
   Adapters/
     CodeBuddyAdapter.cs
     TraeAdapterBase.cs       Trae 系公共：凭据、伪装头、端点转移、SSE 归一化、多账号扫描
@@ -359,5 +362,5 @@ ProxyHub.Tests/              全部测试
 - Qoder 依赖本机安装 qoderclicn CLI。
 - 各平台采用订阅/积分计费，无公开单 token 单价，`/v1/models/matrix` 仅提供能力对比。
 - 多用户负载均衡（请求级轮询、并发上限、按用户配额）仅为方案，未实现，见 `docs/设计方案-v2.md`。
-- `/admin` 管理页当前依赖磁盘 `wwwroot/admin.html` 提供静态访问；富表单 UI（账号手动录入表单、编辑时实时匹配预览等）与 DLL 嵌入资源打包已延期。
+- `/admin` 管理页由程序集嵌入资源交付（源码 `wwwroot/admin.html` 仅作为嵌入资源来源），运行时无磁盘 `wwwroot` 依赖。
 - TraeCN / TraeWork 动态模型发现当前只读取默认 profile 目录下的 `state.vscdb`，多账号 profile 场景下非默认 profile 的模型缓存暂不参与动态拉取。
