@@ -88,10 +88,11 @@ public sealed class AccountRegistry
         {
             var key = AccountKey(adapterId, a.AccountId);
             var isEnabled = !_disabled.ContainsKey(key);
-            var order = _customOrder.TryGetValue(key, out var o) ? o : a.Order;
+            var initialOrder = a.Order > 0 ? a.Order : (idx + 1);
+            var order = _customOrder.TryGetValue(key, out var o) ? o : initialOrder;
             var credits = _credits.TryGetValue(key, out var c) ? (int?)c : a.Credits;
             return a with { Enabled = isEnabled, Order = order, Credits = credits };
-        }).OrderBy(a => a.Order).ThenBy(a => a.AccountId).ToList();
+        }).OrderBy(a => a.Order).ToList();
     }
 
     /// <summary>某适配器当前生效且启用的账号列表（严格按账号顺序排序，供候选链构建使用）。</summary>
