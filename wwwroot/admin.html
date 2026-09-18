@@ -100,7 +100,7 @@ let TAB = 'overview';
 
 const TABS = [
   ['overview','总览'],['models','模型矩阵'],['groups','分组管理'],
-  ['accounts','账号 / 熔断'],['config','配置'],
+  ['accounts','账号 / 熔断'],['config','配置'],['signin','签到中心'],
 ];
 
 function authHeaders(){ return KEY ? {Authorization:'Bearer '+KEY} : {}; }
@@ -594,12 +594,165 @@ function maskPat(obj){
   return copy;
 }
 
+/* ─────────── Signin Center ─────────── */
+let signinLastRun = null;
+let signinLoading = false;
+let signinData = null;
+
+function fmtLastRun(ts){
+  if(!ts) return '从未';
+  const sec = Math.max(0, Math.round((Date.now() - ts)/1000));
+  return sec + ' 秒前';
+}
+
+function updateSigninButtons(){
+  const runBtn = document.getElementById('btn_run_signin');
+  const refreshBtn = document.getElementById('btn_refresh_signin');
+  const lastRunEl = document.getElementById('signin_last_run');
+  if(runBtn){
+    runBtn.disabled = signinLoading;
+    runBtn.textContent = signinLoading ? '签到执行中…' : '全部签到';
+  }
+  if(refreshBtn){
+    refreshBtn.disabled = signinLoading;
+    refreshBtn.textContent = signinLoading ? '刷新中…' : '刷新状态';
+  }
+  if(lastRunEl){
+    lastRunEl.textContent = '上次运行：' + fmtLastRun(signinLastRun);
+  }
+}
+
+async function fetchSigninStatus(quiet = false){
+  signinLoading = true;
+  updateSigninButtons();
+  try{
+    const d = await api('/admin/api/signin/status');
+    signinData = d;
+    renderSigninContent();
+    if(!quiet) toast('签到状态已刷新');
+  }catch(e){
+    toast(e.message || '获取签到状态失败', true);
+    renderSigninContent(e.message);
+  }finally{
+    signinLoading = false;
+    updateSigninButtons();
+  }
+}
+
+async function runAllSignin(){
+  if(signinLoading) return;
+  signinLoading = true;
+  updateSigninButtons();
+  try{
+    const d = await api('/admin/api/signin/run', { method: 'POST' });
+    signinLastRun = Date.now();
+    signinData = d;
+    renderSigninContent();
+    toast('签到执行完成');
+  }catch(e){
+    toast(e.message || '签到执行失败', true);
+  }finally{
+    signinLoading = false;
+    updateSigninButtons();
+  }
+}
+
+function renderSigninContent(errMsg){
+  const container = document.getElementById('signin_table_container');
+  if(!container) return;
+  if(errMsg){
+    container.innerHTML = `<div style="color:var(--err)">${esc(errMsg)}</div>`;
+    return;
+  }
+  const accounts = signinData?.accounts || [];
+  if(!accounts.length){
+    container.innerHTML = '<div class="hint">未检测到可用签到账号（支持 Trae 和 WorkBuddy 账号自动扫描）。</div>';
+    return;
+  }
+
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>平台</th>
+          <th>账号标签</th>
+          <th>今日状态</th>
+          <th>积分</th>
+          <th>连续天数</th>
+          <th>备注</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${accounts.map(acc => {
+          const isTrae = (acc.platform || acc.adapterId || '').toLowerCase().includes('trae');
+          const platBadge = isTrae
+            ? '<span class="pill" style="color:#4f8cc9;border-color:#4f8cc9">trae</span>'
+            : '<span class="pill" style="color:#d29922;border-color:#d29922">workbuddy</span>';
+
+          let statusBadge = '<span class="pill dim">— 未知</span>';
+          if(acc.result === 'NO_SESSION'){
+            statusBadge = '<span class="pill err">⚠️ 登录失效</span>';
+          } else if(acc.result === 'INACTIVE'){
+            statusBadge = '<span class="pill dim">⚠️ 未开启</span>';
+          } else if(acc.result === 'LOAD_ERROR' || acc.result === 'ERROR'){
+            statusBadge = '<span class="pill err">❌ 异常</span>';
+          } else if(acc.todayCheckedIn === true || acc.result === 'CLAIMED' || acc.result === 'ALREADY'){
+            statusBadge = '<span class="pill ok">✅ 已签到</span>';
+          } else if(acc.todayCheckedIn === false){
+            statusBadge = '<span class="pill warn">❌ 未签</span>';
+          }
+
+          const label = acc.label || acc.accountLabel || acc.name || '-';
+          const credits = (acc.totalCredits != null && acc.totalCredits !== '') ? fmt(acc.totalCredits) : '-';
+          const streak = (acc.streakDays != null && acc.streakDays !== '') ? (acc.streakDays + ' 天') : '-';
+          const report = acc.report || acc.errorDetail || '-';
+
+          return `<tr>
+            <td>${platBadge}</td>
+            <td class="mono">${esc(label)}</td>
+            <td>${statusBadge}</td>
+            <td class="mono">${credits}</td>
+            <td class="mono">${streak}</td>
+            <td class="hint">${esc(report)}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+async function renderSignin(){
+  const el = document.getElementById('content');
+  el.innerHTML = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div class="row" style="margin-bottom:0">
+          <button id="btn_run_signin" class="primary" onclick="runAllSignin()">全部签到</button>
+          <span id="signin_last_run" class="hint" style="margin-left:8px">上次运行：${fmtLastRun(signinLastRun)}</span>
+        </div>
+      </div>
+      <div id="signin_table_container">
+        <div class="hint">加载中…</div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button id="btn_refresh_signin" class="small" onclick="fetchSigninStatus()">刷新状态</button>
+      </div>
+    </div>
+  `;
+  if(!signinData){
+    await fetchSigninStatus(true);
+  } else {
+    renderSigninContent();
+  }
+}
+
 async function render(){
   if(TAB==='overview') await renderOverview();
   else if(TAB==='models') await renderModels();
   else if(TAB==='groups') await renderGroups();
   else if(TAB==='accounts') await renderAccounts();
   else if(TAB==='config') await renderConfig();
+  else if(TAB==='signin') await renderSignin();
 }
 
 /* ─────────── boot ─────────── */
