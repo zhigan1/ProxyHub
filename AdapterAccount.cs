@@ -10,7 +10,11 @@ public sealed record AdapterAccount(
     string Label,
     string? SourceFile = null,
     string? Pat = null,
-    bool Discovered = true)
+    bool Discovered = true,
+    string? UserId = null,
+    int? Credits = null,
+    bool Enabled = true,
+    int Order = 0)
 {
     public override string ToString() => $"{AdapterId}:{AccountId}";
 }

@@ -86,6 +86,39 @@ public sealed class Registry
         return null;
     }
 
+    /// <summary>找出所有支持该模型的生效适配器及上游模型 ID（供跨平台同名模型故障转移使用）。</summary>
+    public List<(IAdapter Adapter, string UpstreamId)> ResolveAll(string externalId)
+    {
+        var list = new List<(IAdapter Adapter, string UpstreamId)>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // 1. 动态拉取表中匹配
+        foreach (var (adapterId, dyn) in _dynamic)
+        {
+            var dm = dyn.FirstOrDefault(mm => mm.ExternalId.Equals(externalId, StringComparison.OrdinalIgnoreCase));
+            if (dm is not null && _adapters.TryGetValue(adapterId, out var ad) && seen.Add(adapterId))
+                list.Add((ad, dm.UpstreamId));
+        }
+
+        // 2. 静态表与无前缀匹配
+        foreach (var (adapterId, adapter) in _adapters)
+        {
+            if (seen.Contains(adapterId)) continue;
+            var bare = externalId.StartsWith($"{adapterId}-", StringComparison.OrdinalIgnoreCase)
+                ? externalId[(adapterId.Length + 1)..]
+                : externalId;
+
+            var m = EffectiveModels(adapter).FirstOrDefault(x =>
+                x.UpstreamId.Equals(bare, StringComparison.OrdinalIgnoreCase) ||
+                x.ExternalId.Equals(externalId, StringComparison.OrdinalIgnoreCase));
+
+            if (m is not null && seen.Add(adapterId))
+                list.Add((adapter, m.UpstreamId));
+        }
+
+        return list;
+    }
+
     /// <summary>对外模型列表：仅含当前生效模型。虚拟分组模型由 HTTP 层追加（owned_by=proxyhub）。</summary>
     public IEnumerable<ModelInfo> ListModels() =>
         _adapters.SelectMany(kv => EffectiveModels(kv.Value).Select(m => (AdapterId: kv.Key, Model: m)))

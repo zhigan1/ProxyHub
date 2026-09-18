@@ -219,7 +219,7 @@ public static class AdminApi
             var breakers = rt.Breakers.Snapshot();
             var result = rt.Adapters.Select(a =>
             {
-                var accounts = rt.Accounts.AccountsOf(a.Id);
+                var accounts = rt.Accounts.AllAccountsOf(a.Id);
                 return new
                 {
                     adapter = a.Id,
@@ -227,6 +227,10 @@ public static class AdminApi
                     {
                         acc.AccountId,
                         acc.Label,
+                        userId = acc.UserId ?? acc.Label,
+                        credits = acc.Credits,
+                        acc.Enabled,
+                        acc.Order,
                         source = acc.SourceFile is not null ? acc.SourceFile : acc.Pat is not null ? "pat" : "builtin",
                         acc.Discovered,
                         openBreakers = breakers.Count(b => b.Key.StartsWith($"{a.Id}|{acc.AccountId}|") && b.State is "open" or "half-open"),
@@ -234,6 +238,41 @@ public static class AdminApi
                 };
             });
             return Json(new { accounts = result, breakers });
+        });
+
+        app.MapPost("/admin/api/accounts/toggle", async (HttpContext ctx) =>
+        {
+            if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
+            var body = await JsonNode.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted) as JsonObject;
+            var adapter = body?["adapter"]?.GetValue<string>();
+            var accountId = body?["accountId"]?.GetValue<string>();
+            var enabled = body?["enabled"]?.GetValue<bool>() ?? true;
+            if (string.IsNullOrEmpty(adapter) || string.IsNullOrEmpty(accountId))
+                return Error("adapter and accountId required", StatusCodes.Status400BadRequest);
+
+            rt.Accounts.ToggleAccount(adapter, accountId, enabled);
+            return Json(new { ok = true, adapter, accountId, enabled });
+        });
+
+        app.MapPost("/admin/api/accounts/move", async (HttpContext ctx) =>
+        {
+            if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
+            var body = await JsonNode.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted) as JsonObject;
+            var adapter = body?["adapter"]?.GetValue<string>();
+            var accountId = body?["accountId"]?.GetValue<string>();
+            var direction = body?["direction"]?.GetValue<int>() ?? 0;
+            if (string.IsNullOrEmpty(adapter) || string.IsNullOrEmpty(accountId) || direction == 0)
+                return Error("adapter, accountId and direction required", StatusCodes.Status400BadRequest);
+
+            rt.Accounts.MoveOrder(adapter, accountId, direction);
+            return Json(new { ok = true });
+        });
+
+        app.MapDelete("/admin/api/accounts/{adapter}/{accountId}", (string adapter, string accountId, HttpContext ctx) =>
+        {
+            if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
+            rt.Accounts.DeleteAccount(adapter, accountId);
+            return Json(new { ok = true });
         });
 
         app.MapPost("/admin/api/accounts/refresh", async (HttpContext ctx) =>

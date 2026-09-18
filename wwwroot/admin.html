@@ -351,22 +351,70 @@ async function renderAccounts(){
         <button class="primary" onclick="addAccountModal()">＋ 手工添加账号</button>
         <button onclick="refreshAccounts()">重新扫描本机账号</button>
         <button class="danger" onclick="resetAll()">复位全部熔断</button>
-        <span class="hint">多账号用于熔断后自动切号。同平台多账号高频并发可能触发平台风控，请自行评估。</span>
+        <span class="hint">多账号用于熔断后自动按顺序切号。禁用的账号不参与任何请求调度。</span>
       </div>
       ${(d.accounts||[]).map(a=>`
         <div class="card"><h3>${esc(a.adapter)}（${a.accounts.length} 个账号）</h3>
-        <table><thead><tr><th>账号</th><th>标签</th><th>来源</th><th>类型</th><th>熔断中</th></tr></thead><tbody>
-        ${a.accounts.length? a.accounts.map(acc=>`<tr>
-          <td class="mono">${esc(acc.accountId)}</td><td>${esc(acc.label)}</td>
-          <td class="mono" style="max-width:380px;overflow:hidden;text-overflow:ellipsis">${esc(acc.source||'-')}</td>
-          <td>${acc.discovered?'<span class="pill dim">自动发现</span>':'<span class="pill warn">手工录入</span>'}</td>
-          <td>${acc.openBreakers?`<span class="pill err">${acc.openBreakers}</span>`:'<span class="pill ok">0</span>'}</td>
-        </tr>`).join('') : '<tr><td colspan="5" class="hint">未发现账号（凭据缺失或未登录对应客户端）</td></tr>'}
+        <table><thead><tr>
+          <th style="width:70px">顺序</th>
+          <th>用户ID</th>
+          <th>积分</th>
+          <th>状态</th>
+          <th>来源</th>
+          <th>类型</th>
+          <th>熔断</th>
+          <th style="width:180px">操作</th>
+        </tr></thead><tbody>
+        ${a.accounts.length? a.accounts.map((acc, idx)=>`
+          <tr style="${acc.enabled===false?'opacity:0.45;background:rgba(255,255,255,0.01)':''}">
+            <td class="mono">
+              <span style="font-weight:bold;margin-right:4px">#${idx+1}</span>
+              <button class="small" onclick="moveAccount('${esc(a.adapter)}','${esc(acc.accountId)}',-1)" ${idx===0?'disabled':''}>↑</button>
+              <button class="small" onclick="moveAccount('${esc(a.adapter)}','${esc(acc.accountId)}',1)" ${idx===a.accounts.length-1?'disabled':''}>↓</button>
+            </td>
+            <td class="mono" style="font-weight:600">${esc(acc.userId||acc.accountId)}</td>
+            <td class="mono" style="color:var(--ok);font-weight:600">${acc.credits!=null?fmt(acc.credits):'-'}</td>
+            <td>${acc.enabled!==false?'<span class="pill ok">启用</span>':'<span class="pill dim">已禁用</span>'}</td>
+            <td class="mono" title="${esc(acc.source||'-')}" style="max-width:260px;overflow:hidden;text-overflow:ellipsis">${esc(acc.source||'-')}</td>
+            <td>${acc.discovered?'<span class="pill dim">自动发现</span>':'<span class="pill warn">手工录入</span>'}</td>
+            <td>${acc.openBreakers?`<span class="pill err">${acc.openBreakers}</span>`:'<span class="pill ok">0</span>'}</td>
+            <td>
+              <button class="small ${acc.enabled!==false?'':'primary'}" onclick="toggleAccount('${esc(a.adapter)}','${esc(acc.accountId)}',${acc.enabled===false})">
+                ${acc.enabled!==false?'禁用':'启用'}
+              </button>
+              <button class="small danger" onclick="deleteAccount('${esc(a.adapter)}','${esc(acc.accountId)}')">删除</button>
+            </td>
+          </tr>`).join('') : '<tr><td colspan="8" class="hint">未发现账号（凭据缺失或未登录对应客户端）</td></tr>'}
         </tbody></table></div>`).join('')}
       <div class="card"><h3>全部熔断节点</h3><div id="bk"></div></div>`;
     renderBreakers(d.breakers||[]);
   }catch(e){ el.innerHTML = `<div class="card" style="color:var(--err)">${esc(e.message)}</div>`; }
 }
+
+async function toggleAccount(adapter, accountId, enabled){
+  try{
+    await api('/admin/api/accounts/toggle', { method: 'POST', body: JSON.stringify({ adapter, accountId, enabled }) });
+    toast(enabled ? '账号已启用并加入调度链' : '账号已禁用并移出调度链');
+    render();
+  }catch(e){ toast(e.message, true); }
+}
+
+async function moveAccount(adapter, accountId, direction){
+  try{
+    await api('/admin/api/accounts/move', { method: 'POST', body: JSON.stringify({ adapter, accountId, direction }) });
+    render();
+  }catch(e){ toast(e.message, true); }
+}
+
+async function deleteAccount(adapter, accountId){
+  if(!confirm(`确认移除/删除账号 ${accountId}？（自动发现账号删除后将被禁用忽略）`)) return;
+  try{
+    await api(`/admin/api/accounts/${encodeURIComponent(adapter)}/${encodeURIComponent(accountId)}`, { method: 'DELETE' });
+    toast('账号已移除');
+    render();
+  }catch(e){ toast(e.message, true); }
+}
+
 async function refreshAccounts(){
   try{ const d=await api('/admin/api/accounts/refresh',{method:'POST'});
     toast(`已扫描：共 ${d.total} 个账号（手工 ${d.manual} 个）`); render();
@@ -495,9 +543,15 @@ async function renderConfig(){
           <div class="field"><label>端口（需重启）</label><input id="c_port" value="${c.port??8265}"></div>
           <div class="field"><label>proxy key（需重启，空=本地开放）</label><input id="c_proxyKey" value="${esc(c.proxyKey||'')}"></div>
           <div class="field"><label>上游超时 ms</label><input id="c_timeoutMs" value="${c.timeoutMs??120000}"></div>
-          <div class="field"><label>适配器开关（需重启）</label>
-            ${['codebuddy','traecn','traework','qoder'].map(a=>`
-              <label style="margin-right:10px"><input type="checkbox" id="c_ad_${a}" ${c.adapters?.[a]!==false?'checked':''}> ${a}</label>`).join('')}
+          <div class="field" style="grid-column: 1 / -1;">
+            <label style="margin-bottom:8px">适配器开关（需重启）</label>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));gap:10px;background:rgba(255,255,255,0.03);padding:10px 14px;border-radius:6px;border:1px solid var(--line)">
+              ${['codebuddy','traecn','traework','qoder'].map(a=>`
+                <label style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;cursor:pointer;background:rgba(0,0,0,0.2);border-radius:4px;border:1px solid rgba(255,255,255,0.05);margin:0">
+                  <span class="mono" style="font-weight:600;font-size:13px">${a}</span>
+                  <input type="checkbox" id="c_ad_${a}" ${c.adapters?.[a]!==false?'checked':''} style="width:16px;height:16px;margin:0;cursor:pointer">
+                </label>`).join('')}
+            </div>
           </div>
         </div></div>
       <div class="card"><h3>熔断参数（热更新）</h3><div class="form2">

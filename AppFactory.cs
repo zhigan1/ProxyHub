@@ -230,23 +230,47 @@ public static class AppFactory
     }
 
     /// <summary>
-    /// 构建候选链：分组模型 → 展开为跨平台×多账号有序链；真实模型 → 该模型×该平台全部账号（天然具备切号能力）。
+    /// 构建候选链：
+    /// 1. 若为分组或命中特化分组规则（如请求 deepseek-v4.1-flash 自动命中 deepseek-v4.1-flash-auto 分组），按分组展开跨平台×多账号轮次链；
+    /// 2. 若多平台均支持该模型，展开跨平台多适配器×多账号轮次候选链（首选平台熔断后无缝自动切下一平台）；
+    /// 3. 兜底尝试 auto 分组。
     /// </summary>
     private static List<ChainNode> BuildChain(string model, ProxyHubRuntime rt)
     {
-        if (rt.Groups.IsGroup(model))
-            return rt.Groups.Expand(model, rt.Registry, rt.Accounts, rt.Adapters);
+        // 1. 优先查命中分组（精确名或专属特化分组通配匹配）
+        var matchedGroup = rt.Groups.FindMatchingGroup(model);
+        if (matchedGroup is not null)
+            return rt.Groups.Expand(matchedGroup, rt.Registry, rt.Accounts, rt.Adapters);
 
-        var resolved = rt.Registry.ResolveModel(model);
-        if (resolved is null) return new List<ChainNode>();
+        // 2. 跨平台多适配器同名模型聚合轮次链
+        var candidates = rt.Registry.ResolveAll(model);
+        if (candidates.Count > 0)
+        {
+            var perAdapter = candidates.Select(c =>
+            {
+                var accs = rt.Accounts.AccountsOf(c.Adapter.Id).ToList();
+                if (accs.Count == 0) accs.Add(null!);
+                return (c.Adapter, c.UpstreamId, Accounts: accs);
+            }).ToList();
 
-        var (adapter, upstreamId) = resolved.Value;
-        var accounts = rt.Accounts.AccountsOf(adapter.Id);
-        if (accounts.Count == 0)
-            return new List<ChainNode> { new(adapter, null, upstreamId, model) };
-        return accounts
-            .Select(a => new ChainNode(adapter, a, upstreamId, model))
-            .ToList();
+            var nodes = new List<ChainNode>();
+            var maxRounds = perAdapter.Max(x => x.Accounts.Count);
+            for (var round = 0; round < maxRounds; round++)
+            {
+                foreach (var x in perAdapter)
+                {
+                    if (round < x.Accounts.Count)
+                        nodes.Add(new ChainNode(x.Adapter, x.Accounts[round], x.UpstreamId, model));
+                }
+            }
+            return nodes;
+        }
+
+        // 3. 兜底回退 auto 分组
+        if (rt.Groups.IsGroup("auto"))
+            return rt.Groups.Expand("auto", rt.Registry, rt.Accounts, rt.Adapters);
+
+        return new List<ChainNode>();
     }
 
     private static void RecordUsage(ProxyHubRuntime rt, ChainNode node, IChunkSink sink)

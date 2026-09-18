@@ -10,6 +10,10 @@ public sealed class AccountRegistry
 {
     private readonly ConcurrentDictionary<string, IReadOnlyList<AdapterAccount>> _discovered = new();
     private readonly ConcurrentDictionary<string, IReadOnlyList<AdapterAccount>> _manual = new();
+    private readonly ConcurrentDictionary<string, bool> _disabled = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, bool> _deleted = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _customOrder = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _credits = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
 
     /// <summary>重新执行各适配器的本机账号扫描；单个适配器失败记空列表，不影响其他平台。</summary>
@@ -53,7 +57,6 @@ public sealed class AccountRegistry
         }
     }
 
-    /// <summary>手工账号字段按平台解释：CodeBuddy 用 authFile，Trae 系用 storageFile，Qoder 用 pat。</summary>
     private static AdapterAccount? ToAccount(string adapterId, ManualAccount m, int index)
     {
         var label = string.IsNullOrWhiteSpace(m.Label) ? $"manual-{index + 1}" : m.Label.Trim();
@@ -61,26 +64,101 @@ public sealed class AccountRegistry
         return adapterId.ToLowerInvariant() switch
         {
             "codebuddy" => m.AuthFile is null ? null
-                : new AdapterAccount(adapterId, id, label, SourceFile: m.AuthFile, Discovered: false),
+                : new AdapterAccount(adapterId, id, label, SourceFile: m.AuthFile, Discovered: false, UserId: label, Order: 100 + index),
             "traecn" or "traework" => m.StorageFile is null ? null
-                : new AdapterAccount(adapterId, id, label, SourceFile: m.StorageFile, Discovered: false),
+                : new AdapterAccount(adapterId, id, label, SourceFile: m.StorageFile, Discovered: false, UserId: label, Order: 100 + index),
             "qoder" => m.Pat is null ? null
-                : new AdapterAccount(adapterId, id, label, Pat: m.Pat, Discovered: false),
+                : new AdapterAccount(adapterId, id, label, Pat: m.Pat, Discovered: false, UserId: label, Order: 100 + index),
             _ => null,
         };
     }
 
-    /// <summary>某适配器的全部账号：自动发现在前（默认账号即首项），手工录入殿后。</summary>
-    public IReadOnlyList<AdapterAccount> AccountsOf(string adapterId)
+    /// <summary>某适配器的全部账号列表（含禁用与启用，供管理后台展示与调整）。</summary>
+    public IReadOnlyList<AdapterAccount> AllAccountsOf(string adapterId)
     {
         _discovered.TryGetValue(adapterId, out var found);
         _manual.TryGetValue(adapterId, out var manual);
-        if ((found is null || found.Count == 0) && (manual is null || manual.Count == 0))
-            return Array.Empty<AdapterAccount>();
-        var merged = new List<AdapterAccount>(found ?? Array.Empty<AdapterAccount>());
-        if (manual is not null) merged.AddRange(manual);
-        return merged;
+        var merged = new List<AdapterAccount>();
+        if (found is not null)
+            merged.AddRange(found.Where(a => !_deleted.ContainsKey(AccountKey(adapterId, a.AccountId))));
+        if (manual is not null)
+            merged.AddRange(manual.Where(a => !_deleted.ContainsKey(AccountKey(adapterId, a.AccountId))));
+
+        return merged.Select((a, idx) =>
+        {
+            var key = AccountKey(adapterId, a.AccountId);
+            var isEnabled = !_disabled.ContainsKey(key);
+            var order = _customOrder.TryGetValue(key, out var o) ? o : a.Order;
+            var credits = _credits.TryGetValue(key, out var c) ? (int?)c : a.Credits;
+            return a with { Enabled = isEnabled, Order = order, Credits = credits };
+        }).OrderBy(a => a.Order).ThenBy(a => a.AccountId).ToList();
     }
+
+    /// <summary>某适配器当前生效且启用的账号列表（严格按账号顺序排序，供候选链构建使用）。</summary>
+    public IReadOnlyList<AdapterAccount> AccountsOf(string adapterId)
+    {
+        return AllAccountsOf(adapterId)
+            .Where(a => a.Enabled)
+            .ToList();
+    }
+
+    public void ToggleAccount(string adapterId, string accountId, bool enabled)
+    {
+        var key = AccountKey(adapterId, accountId);
+        if (enabled) _disabled.TryRemove(key, out _);
+        else _disabled[key] = true;
+    }
+
+    public void DeleteAccount(string adapterId, string accountId)
+    {
+        var key = AccountKey(adapterId, accountId);
+        _deleted[key] = true;
+        _disabled[key] = true;
+
+        lock (_gate)
+        {
+            if (_manual.TryGetValue(adapterId, out var list))
+            {
+                var filtered = list.Where(a => !a.AccountId.Equals(accountId, StringComparison.OrdinalIgnoreCase)).ToList();
+                _manual[adapterId] = filtered;
+            }
+        }
+    }
+
+    public void MoveOrder(string adapterId, string accountId, int direction)
+    {
+        var accounts = AllAccountsOf(adapterId).ToList();
+        var idx = accounts.FindIndex(a => a.AccountId.Equals(accountId, StringComparison.OrdinalIgnoreCase));
+        if (idx < 0) return;
+        var targetIdx = idx + direction;
+        if (targetIdx < 0 || targetIdx >= accounts.Count) return;
+
+        var current = accounts[idx];
+        var target = accounts[targetIdx];
+
+        var curKey = AccountKey(adapterId, current.AccountId);
+        var tgtKey = AccountKey(adapterId, target.AccountId);
+
+        // 交换顺序
+        var curOrder = current.Order;
+        var tgtOrder = target.Order;
+        if (curOrder == tgtOrder)
+        {
+            curOrder = idx;
+            tgtOrder = targetIdx;
+        }
+
+        _customOrder[curKey] = tgtOrder;
+        _customOrder[tgtKey] = curOrder;
+    }
+
+    public void UpdateCredit(string adapterId, string accountId, int credits)
+    {
+        var key = AccountKey(adapterId, accountId);
+        _credits[key] = credits;
+    }
+
+    private static string AccountKey(string adapterId, string accountId) => $"{adapterId}:{accountId}";
 
     public int TotalCount => _discovered.Values.Sum(v => v.Count) + _manual.Values.Sum(v => v.Count);
 

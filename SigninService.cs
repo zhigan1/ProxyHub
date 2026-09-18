@@ -46,7 +46,10 @@ public sealed class SigninService
         var results = new List<SigninResult>();
         foreach (var acc in accounts)
         {
-            results.Add(await SigninAsync(acc, ct));
+            var r = await SigninAsync(acc, ct);
+            results.Add(r);
+            if (r.TotalCredits.HasValue)
+                rt.Accounts.UpdateCredit(acc.AdapterId, acc.AccountId, r.TotalCredits.Value);
             if (accounts.Count > 1) await Task.Delay(1200, ct);
         }
         LastRunAt = DateTimeOffset.UtcNow;
@@ -60,7 +63,12 @@ public sealed class SigninService
         var accounts = CollectAccounts(rt);
         var results = new List<SigninResult>();
         foreach (var acc in accounts)
-            results.Add(await GetStatusAsync(acc, ct));
+        {
+            var r = await GetStatusAsync(acc, ct);
+            results.Add(r);
+            if (r.TotalCredits.HasValue)
+                rt.Accounts.UpdateCredit(acc.AdapterId, acc.AccountId, r.TotalCredits.Value);
+        }
         return results;
     }
 
@@ -131,15 +139,14 @@ public sealed class SigninService
         return (token, deviceId);
     }
 
-    private static HttpRequestMessage TraeRequest(string path, string token, string deviceId, HttpMethod? method = null)
+    private static HttpRequestMessage TraeRequest(string path, string token, string deviceId)
     {
-        var req = new HttpRequestMessage(method ?? HttpMethod.Post, TraeHost + path);
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        req.Headers.TryAddWithoutValidation("x-client-id", TraeClientId);
-        req.Headers.TryAddWithoutValidation("x-app-version", TraeAppVersion);
+        var req = new HttpRequestMessage(HttpMethod.Post, TraeHost + path);
+        req.Headers.TryAddWithoutValidation("Authorization", $"Cloud-IDE-JWT {token}");
+        req.Headers.TryAddWithoutValidation("X-User-Region", "cn");
         req.Headers.TryAddWithoutValidation("x-device-id", deviceId);
-        if (method != HttpMethod.Get)
-            req.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+        req.Headers.TryAddWithoutValidation("User-Agent", $"Trae/{TraeAppVersion}");
+        req.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
         return req;
     }
 
@@ -152,7 +159,7 @@ public sealed class SigninService
         var (token, deviceId) = creds.Value;
         try
         {
-            using var req = TraeRequest("/ide/user/signin/status", token, deviceId, HttpMethod.Get);
+            using var req = TraeRequest("/trae/api/v2/ug/checkin_credits/status", token, deviceId);
             using var resp = await _http.SendAsync(req, ct);
             var body = await ParseJson(resp, ct);
             return BuildTraeResult(account, body, resp.StatusCode, null);
@@ -173,30 +180,31 @@ public sealed class SigninService
         try
         {
             // 1. 查状态
-            using var statusReq = TraeRequest("/ide/user/signin/status", token, deviceId, HttpMethod.Get);
+            using var statusReq = TraeRequest("/trae/api/v2/ug/checkin_credits/status", token, deviceId);
             using var statusResp = await _http.SendAsync(statusReq, ct);
-            var statusBody = await ParseJson(statusResp, ct);
+            if ((int)statusResp.StatusCode is 401 or 403)
+                return Fail(account, "trae", "NO_SESSION", $"登录态失效（HTTP {(int)statusResp.StatusCode}）", null);
 
-            var todayChecked = Dig<bool>(statusBody, "today_checked_in");
-            if (todayChecked == true)
+            var statusBody = await ParseJson(statusResp, ct);
+            var already = Dig<bool?>(statusBody, "checked_in") == true || Dig<bool?>(statusBody, "did_checked_in") == true;
+            if (already)
                 return BuildTraeResult(account, statusBody, statusResp.StatusCode, "ALREADY");
 
-            // 2. 签到
-            using var claimReq = TraeRequest("/ide/user/signin", token, deviceId);
+            // 2. 领取签到
+            using var claimReq = TraeRequest("/trae/api/v2/ug/checkin_credits/claim", token, deviceId);
             using var claimResp = await _http.SendAsync(claimReq, ct);
             if ((int)claimResp.StatusCode is 401 or 403)
                 return Fail(account, "trae", "NO_SESSION", $"登录态失效（HTTP {(int)claimResp.StatusCode}）", null);
 
             var claimBody = await ParseJson(claimResp, ct);
-            var credit = Dig<int?>(claimBody, "credit") ?? Dig<int?>(claimBody, "credits");
-            if ((int)claimResp.StatusCode is not (>= 200 and < 300) || credit is null)
-            {
-                var errMsg = Dig<string>(claimBody, "message") ?? Dig<string>(claimBody, "msg") ?? $"HTTP {(int)claimResp.StatusCode}";
-                return Fail(account, "trae", "ERROR", $"签到失败：{errMsg}", null);
-            }
+            var code = Dig<int?>(claimBody, "code") ?? 0;
+            if (code == 9095)
+                return BuildTraeResult(account, statusBody, claimResp.StatusCode, "ALREADY");
 
-            // 3. 刷新状态（获取最新积分）
-            using var req2 = TraeRequest("/ide/user/signin/status", token, deviceId, HttpMethod.Get);
+            var credit = Dig<int?>(claimBody, "credits") ?? Dig<int?>(claimBody, "extra_credits") ?? 50;
+
+            // 3. 刷新最新状态
+            using var req2 = TraeRequest("/trae/api/v2/ug/checkin_credits/status", token, deviceId);
             using var resp2 = await _http.SendAsync(req2, ct);
             var fresh = await ParseJson(resp2, ct);
 
@@ -213,23 +221,26 @@ public sealed class SigninService
         if ((int)code is 401 or 403)
             return Fail(acc, "trae", "NO_SESSION", $"登录态失效（HTTP {(int)code}）", null);
 
-        var totalCredits = Dig<int?>(body, "total_credits") ?? Dig<int?>(body, "totalCredits");
-        var streakDays = Dig<int?>(body, "streak_days") ?? Dig<int?>(body, "streakDays");
-        var todayChecked = Dig<bool?>(body, "today_checked_in") ?? Dig<bool?>(body, "todayCheckedIn");
-        var todayCredit = credit ?? Dig<int?>(body, "today_credit") ?? Dig<int?>(body, "daily_credit");
+        var enable = Dig<bool?>(body, "enable") ?? true;
+        if (!enable)
+            return new SigninResult(acc.AdapterId, acc.Label, "trae", "INACTIVE", "签到活动未开启", null, null, null, false);
+
+        var credits = Dig<int?>(body, "credits") ?? Dig<int?>(body, "total_credits");
+        var checkedIn = Dig<bool?>(body, "checked_in") ?? Dig<bool?>(body, "did_checked_in");
+        var todayCredit = credit ?? (checkedIn == true ? (Dig<int?>(body, "extra_credits") ?? 50) : null);
 
         if (forceResult is null && (int)code is < 200 or >= 300)
             return Fail(acc, "trae", "ERROR", $"查询状态失败（HTTP {(int)code}）", null);
 
-        var result = forceResult ?? "OK"; // 状态查询成功即为 OK，今日是否已签看 TodayCheckedIn 字段
+        var result = forceResult ?? (checkedIn == true ? "ALREADY" : "OK");
         var report = result switch
         {
-            "CLAIMED" => $"签到成功 +{credit}积分 · 连续{streakDays}天 · 累计{totalCredits}积分",
-            "ALREADY" => $"今日已签到 · 连续{streakDays}天 · 累计{totalCredits}积分",
-            "OK" => $"积分 {totalCredits} · 连续{streakDays}天 · 今日{(todayChecked == true ? "已签" : "未签")}",
-            _ => $"上游返回异常（HTTP {(int)code}）",
+            "CLAIMED" => $"签到成功 +{credit ?? 50}积分 · 累计可用额度 {credits}积分",
+            "ALREADY" => $"今日已签到 · 累计可用额度 {credits}积分",
+            "OK" => $"可用额度 {credits}积分 · 今日{(checkedIn == true ? "已签" : "未签")}",
+            _ => body?["message"]?.GetValue<string>() ?? $"状态码 {(int)code}",
         };
-        return new SigninResult(acc.AdapterId, acc.Label, "trae", result, report, totalCredits, todayCredit, streakDays, todayChecked);
+        return new SigninResult(acc.AdapterId, acc.Label, "trae", result, report, credits, todayCredit, null, checkedIn);
     }
 
     // ─── WorkBuddy ────────────────────────────────────────

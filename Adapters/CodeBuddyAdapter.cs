@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -91,23 +91,34 @@ public sealed class CodeBuddyAdapter : IAdapter
     public Task<IReadOnlyList<AdapterAccount>> DiscoverAccountsAsync(CancellationToken ct = default)
     {
         var accounts = new List<AdapterAccount>();
+        var order = 0;
         foreach (var f in AuthFilesOrdered())
         {
-            if (TryReadAuth(f.FullName, out _, out _))
-                accounts.Add(new AdapterAccount(Id, Path.GetFileNameWithoutExtension(f.Name), f.Name, SourceFile: f.FullName));
+            if (TryReadAuth(f.FullName, out _, out var uid, out var nickname))
+            {
+                var userDisplay = !string.IsNullOrEmpty(nickname) ? nickname : uid ?? Path.GetFileNameWithoutExtension(f.Name);
+                accounts.Add(new AdapterAccount(
+                    Id,
+                    Path.GetFileNameWithoutExtension(f.Name),
+                    f.Name,
+                    SourceFile: f.FullName,
+                    UserId: userDisplay,
+                    Order: order++));
+            }
         }
         return Task.FromResult<IReadOnlyList<AdapterAccount>>(accounts);
     }
 
-    /// <summary>解析凭据文件为 { token, uid }；损坏/缺失返回 false。</summary>
-    private static bool TryReadAuth(string file, out string? token, out string? uid)
+    /// <summary>解析凭据文件为 { token, uid, nickname }；损坏/缺失返回 false。</summary>
+    private static bool TryReadAuth(string file, out string? token, out string? uid, out string? nickname)
     {
-        token = uid = null;
+        token = uid = nickname = null;
         try
         {
             var data = JsonNode.Parse(File.ReadAllText(file)) as JsonObject;
             token = data?["auth"]?["accessToken"]?.GetValue<string>();
             uid = data?["account"]?["uid"]?.ToString();
+            nickname = data?["account"]?["nickname"]?.ToString();
             return !string.IsNullOrEmpty(token) && !string.IsNullOrEmpty(uid);
         }
         catch
@@ -115,6 +126,9 @@ public sealed class CodeBuddyAdapter : IAdapter
             return false;
         }
     }
+
+    private static bool TryReadAuth(string file, out string? token, out string? uid) =>
+        TryReadAuth(file, out token, out uid, out _);
 
     /// <summary>读指定账号凭据；account 为 null 时按优先级取第一个有效文件（Fail Fast）。</summary>
     public Task<AuthInfo> GetAuthAsync(AdapterAccount? account = null, CancellationToken ct = default)

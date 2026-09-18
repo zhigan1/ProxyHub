@@ -58,8 +58,29 @@ public abstract class TraeAdapterBase : IAdapter
     public Task<IReadOnlyList<AdapterAccount>> DiscoverAccountsAsync(CancellationToken ct = default)
     {
         var accounts = new List<AdapterAccount>();
+        var order = 0;
+
+        void TryAddAccount(string accId, string label, string storagePath)
+        {
+            string? userId = null;
+            try
+            {
+                var auth = ReadStorageAuth(storagePath);
+                userId = auth.UserId;
+            }
+            catch { }
+
+            accounts.Add(new AdapterAccount(
+                Id,
+                accId,
+                label,
+                SourceFile: storagePath,
+                UserId: userId ?? label,
+                Order: order++));
+        }
+
         if (File.Exists(StorageFile))
-            accounts.Add(new AdapterAccount(Id, "default", "默认目录", SourceFile: StorageFile));
+            TryAddAccount("default", "默认目录", StorageFile);
 
         try
         {
@@ -72,7 +93,7 @@ public abstract class TraeAdapterBase : IAdapter
                     var storage = Path.Combine(sub.FullName, "User", "globalStorage", "storage.json");
                     if (!File.Exists(storage)) continue;
                     if (accounts.Any(a => string.Equals(a.SourceFile, storage, StringComparison.OrdinalIgnoreCase))) continue;
-                    accounts.Add(new AdapterAccount(Id, sub.Name, sub.Name, SourceFile: storage));
+                    TryAddAccount(sub.Name, sub.Name, storage);
                 }
             }
         }

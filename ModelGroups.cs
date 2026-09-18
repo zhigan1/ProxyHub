@@ -36,6 +36,25 @@ public sealed class ModelGroups
     public IReadOnlyDictionary<string, GroupConfig> All => _groups;
 
     /// <summary>
+    /// 寻找与模型名匹配的最优先虚拟分组（优先非全通配的特化分组）。
+    /// 例如客户端请求 "deepseek-v4.1-flash" 时，自动匹配到 "deepseek-v4.1-flash-auto" 分组并跨平台故障转移。
+    /// </summary>
+    public string? FindMatchingGroup(string modelId)
+    {
+        if (_groups.ContainsKey(modelId)) return modelId;
+
+        // 1. 优先匹配专属特化分组（排除单 "*" 兜底分组）
+        foreach (var (name, g) in _groups)
+        {
+            if (g.Match.Count == 1 && g.Match[0] == "*") continue;
+            if (g.Match.Any(p => GlobMatch(p, modelId)))
+                return name;
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// 展开分组为有序候选链，按账号轮次构建：
     /// 第 1 轮依 prefer 平台序（未列出的平台按注册顺序殿后）逐平台尝试其第一个账号的全部匹配模型
     /// → 所有平台第一账号耗尽后才进入第 2 轮备用账号，依此类推。
