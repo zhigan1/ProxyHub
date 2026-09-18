@@ -340,6 +340,7 @@ ProxyHub/
   CredentialsCache.cs        凭据缓存（TTL + in-flight 去重）
   UsageTracker.cs            用量统计（线程安全）
   TcCrypto.cs                本地加密凭据解密（AES-128-CBC + SHA-512 完整性校验）
+  SigninService.cs           全平台自动签到与额度轮询服务（Trae 官方云端 / WorkBuddy 每日签到）
   UpstreamHttp.cs            共享传输层：连接池 + 增量 SSE 行解析
   IAdapter.cs                适配器契约
   wwwroot/admin.html         可视化管理页（自包含单文件，以嵌入资源随程序集交付）
