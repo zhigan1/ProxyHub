@@ -10,9 +10,10 @@ public sealed record SigninResult(
     string AdapterId,
     string AccountLabel,
     string Platform,          // "trae" | "workbuddy"
-    string Result,            // "CLAIMED" | "ALREADY" | "NO_SESSION" | "ERROR" | "LOAD_ERROR" | "INACTIVE"
+    string Result,            // "CLAIMED" | "ALREADY" | "OK" | "NO_SESSION" | "ERROR" | "LOAD_ERROR" | "INACTIVE"
     string Report,
     int? TotalCredits,
+    int? TodayCredit,
     int? StreakDays,
     bool? TodayCheckedIn,
     string? ErrorDetail = null);
@@ -29,6 +30,39 @@ public sealed class SigninService
         PooledConnectionLifetime = TimeSpan.FromMinutes(5),
     })
     { Timeout = TimeSpan.FromSeconds(30) };
+
+    public DateTimeOffset? LastRunAt { get; private set; }
+    public IReadOnlyList<SigninResult>? LastResults { get; private set; }
+
+    private static readonly string[] SigninAdapters = ["codebuddy", "traecn", "traework"];
+
+    public static IReadOnlyList<AdapterAccount> CollectAccounts(ProxyHubRuntime rt) =>
+        SigninAdapters.SelectMany(id => rt.Accounts.AccountsOf(id)).ToList();
+
+    /// <summary>为全部账号执行自动签到（顺序执行，防风控）。</summary>
+    public async Task<IReadOnlyList<SigninResult>> RunAllAsync(ProxyHubRuntime rt, CancellationToken ct = default)
+    {
+        var accounts = CollectAccounts(rt);
+        var results = new List<SigninResult>();
+        foreach (var acc in accounts)
+        {
+            results.Add(await SigninAsync(acc, ct));
+            if (accounts.Count > 1) await Task.Delay(1200, ct);
+        }
+        LastRunAt = DateTimeOffset.UtcNow;
+        LastResults = results;
+        return results;
+    }
+
+    /// <summary>查询全部账号签到状态与积分额度。</summary>
+    public async Task<IReadOnlyList<SigninResult>> GetStatusAllAsync(ProxyHubRuntime rt, CancellationToken ct = default)
+    {
+        var accounts = CollectAccounts(rt);
+        var results = new List<SigninResult>();
+        foreach (var acc in accounts)
+            results.Add(await GetStatusAsync(acc, ct));
+        return results;
+    }
 
     // ─── 公共入口 ───────────────────────────────────────────
 
@@ -182,6 +216,7 @@ public sealed class SigninService
         var totalCredits = Dig<int?>(body, "total_credits") ?? Dig<int?>(body, "totalCredits");
         var streakDays = Dig<int?>(body, "streak_days") ?? Dig<int?>(body, "streakDays");
         var todayChecked = Dig<bool?>(body, "today_checked_in") ?? Dig<bool?>(body, "todayCheckedIn");
+        var todayCredit = credit ?? Dig<int?>(body, "today_credit") ?? Dig<int?>(body, "daily_credit");
 
         if (forceResult is null && (int)code is < 200 or >= 300)
             return Fail(acc, "trae", "ERROR", $"查询状态失败（HTTP {(int)code}）", null);
@@ -194,7 +229,7 @@ public sealed class SigninService
             "OK" => $"积分 {totalCredits} · 连续{streakDays}天 · 今日{(todayChecked == true ? "已签" : "未签")}",
             _ => $"上游返回异常（HTTP {(int)code}）",
         };
-        return new SigninResult(acc.AdapterId, acc.Label, "trae", result, report, totalCredits, streakDays, todayChecked);
+        return new SigninResult(acc.AdapterId, acc.Label, "trae", result, report, totalCredits, todayCredit, streakDays, todayChecked);
     }
 
     // ─── WorkBuddy ────────────────────────────────────────
@@ -259,7 +294,7 @@ public sealed class SigninService
                 return Fail(account, "workbuddy", "ERROR", $"查询状态失败（HTTP {(int)resp.StatusCode}）", null);
             var body = await ParseJson(resp, ct);
             if (Dig<bool>(body, "active") == false)
-                return new SigninResult(account.AdapterId, account.Label, "workbuddy", "INACTIVE", "签到活动未开启", null, null, null);
+                return new SigninResult(account.AdapterId, account.Label, "workbuddy", "INACTIVE", "签到活动未开启", null, null, null, null);
             return BuildWbResult(account, body, resp.StatusCode, null, null);
         }
         catch (Exception e)
@@ -285,7 +320,7 @@ public sealed class SigninService
             var statusBody = await ParseJson(statusResp, ct);
             var active = Dig<bool>(statusBody, "active");
             if (active == false)
-                return new SigninResult(account.AdapterId, account.Label, "workbuddy", "INACTIVE", "签到活动未开启", null, null, null);
+                return new SigninResult(account.AdapterId, account.Label, "workbuddy", "INACTIVE", "签到活动未开启", null, null, null, null);
 
             var todayChecked = Dig<bool>(statusBody, "today_checked_in");
             if (todayChecked == true)
@@ -327,6 +362,7 @@ public sealed class SigninService
         var totalCredits = Dig<int?>(body, "total_credits");
         var streakDays = Dig<int?>(body, "streak_days");
         var todayChecked = Dig<bool?>(body, "today_checked_in");
+        var todayCredit = credit ?? Dig<int?>(body, "today_credit") ?? Dig<int?>(body, "daily_credit");
 
         if (forceResult is null && (int)code is < 200 or >= 300)
             return Fail(acc, "workbuddy", "ERROR", $"查询状态失败（HTTP {(int)code}）", null);
@@ -340,7 +376,7 @@ public sealed class SigninService
             "OK" => $"积分 {totalCredits} · 连续{streakDays}天 · 今日{(todayChecked == true ? "已签" : "未签")}",
             _ => $"上游返回异常（HTTP {(int)code}）",
         };
-        return new SigninResult(acc.AdapterId, acc.Label, "workbuddy", result, report, totalCredits, streakDays, todayChecked);
+        return new SigninResult(acc.AdapterId, acc.Label, "workbuddy", result, report, totalCredits, todayCredit, streakDays, todayChecked);
     }
 
     // ─── 通用工具 ──────────────────────────────────────────
@@ -374,5 +410,5 @@ public sealed class SigninService
     }
 
     private static SigninResult Fail(AdapterAccount acc, string platform, string result, string report, string? detail) =>
-        new(acc.AdapterId, acc.Label, platform, result, report, null, null, null, detail);
+        new(acc.AdapterId, acc.Label, platform, result, report, null, null, null, null, detail);
 }

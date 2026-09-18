@@ -27,11 +27,13 @@ public sealed record ManualAccount
     public string? Pat { get; init; }
 }
 
-/// <summary>管理页配置。</summary>
+/// <summary>管理页与自动签到配置。</summary>
 public sealed record AdminConfig
 {
     public bool Enabled { get; init; } = true;
     public bool FailoverHeader { get; init; } = true;
+    public bool AutoSignin { get; init; } = true;
+    public int AutoSigninIntervalHours { get; init; } = 12;
 }
 
 /// <summary>
@@ -205,6 +207,8 @@ public sealed record ProxyHubConfig
         {
             Enabled = ad["enabled"] is JsonValue ev && ev.TryGetValue<bool>(out var e) ? e : true,
             FailoverHeader = ad["failoverHeader"] is JsonValue fv && fv.TryGetValue<bool>(out var f) ? f : true,
+            AutoSignin = ad["autoSignin"] is JsonValue av && av.TryGetValue<bool>(out var a) ? a : true,
+            AutoSigninIntervalHours = ad["autoSigninIntervalHours"] is JsonValue iv && iv.TryGetValue<int>(out var i) ? i : 12,
         };
     }
 

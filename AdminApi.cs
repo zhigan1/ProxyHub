@@ -302,34 +302,31 @@ public static class AdminApi
         app.MapGet("/admin/api/signin/status", async (HttpContext ctx) =>
         {
             if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
-            var accounts = CollectSigninAccounts(rt);
-            var results = new List<SigninResult>();
-            foreach (var acc in accounts)
-                results.Add(await _signin.GetStatusAsync(acc, ctx.RequestAborted));
-            return Json(new { accounts = results.Select(ToJson) });
+            var results = await _signin.GetStatusAllAsync(rt, ctx.RequestAborted);
+            return Json(new
+            {
+                autoSigninEnabled = rt.Config.Current.Admin.AutoSignin,
+                lastRun = _signin.LastRunAt?.ToUnixTimeMilliseconds(),
+                accounts = results.Select(ToJson)
+            });
         });
 
         app.MapPost("/admin/api/signin/run", async (HttpContext ctx) =>
         {
             if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
-            var accounts = CollectSigninAccounts(rt);
-            var results = new List<SigninResult>();
-            foreach (var acc in accounts)
+            var results = await _signin.RunAllAsync(rt, ctx.RequestAborted);
+            return Json(new
             {
-                results.Add(await _signin.SigninAsync(acc, ctx.RequestAborted));
-                if (accounts.Count > 1) await Task.Delay(1200, ctx.RequestAborted);
-            }
-            return Json(new { accounts = results.Select(ToJson) });
+                lastRun = _signin.LastRunAt?.ToUnixTimeMilliseconds(),
+                accounts = results.Select(ToJson)
+            });
         });
     }
 
     // ─── 签到辅助 ─────────────────────────────────────────────────────────
 
     private static readonly SigninService _signin = new();
-    private static readonly string[] SigninAdapters = ["codebuddy", "traecn", "traework"];
-
-    private static IReadOnlyList<AdapterAccount> CollectSigninAccounts(ProxyHubRuntime rt) =>
-        SigninAdapters.SelectMany(id => rt.Accounts.AccountsOf(id)).ToList();
+    public static SigninService SigninServiceInstance => _signin;
 
     private static object ToJson(SigninResult r) => new
     {
@@ -339,6 +336,7 @@ public static class AdminApi
         result = r.Result,
         report = r.Report,
         totalCredits = r.TotalCredits,
+        todayCredit = r.TodayCredit,
         streakDays = r.StreakDays,
         todayCheckedIn = r.TodayCheckedIn,
         errorDetail = r.ErrorDetail,

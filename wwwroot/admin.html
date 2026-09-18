@@ -505,9 +505,11 @@ async function renderConfig(){
         <div class="field"><label>冷却秒数</label><input id="c_cooldown" value="${c.circuitBreaker?.cooldownSeconds??60}"></div>
         <div class="field"><label>半开探测</label><label><input type="checkbox" id="c_probe" ${c.circuitBreaker?.halfOpenProbe!==false?'checked':''}> 冷却期满放行一个探测请求</label></div>
       </div></div>
-      <div class="card"><h3>管理页（热更新）</h3><div class="form2">
+      <div class="card"><h3>管理页与后台自动签到（热更新）</h3><div class="form2">
         <div class="field"><label>启用 /admin</label><label><input type="checkbox" id="c_adminOn" ${c.admin?.enabled!==false?'checked':''}> 允许访问管理页</label></div>
         <div class="field"><label>切换标记头</label><label><input type="checkbox" id="c_foHeader" ${c.admin?.failoverHeader!==false?'checked':''}> 响应头 X-ProxyHub-Failover 标注切换路径</label></div>
+        <div class="field"><label>后台自动签到</label><label><input type="checkbox" id="c_autoSignin" ${c.admin?.autoSignin!==false?'checked':''}> 服务启动及后台定期自动执行所有账号签到</label></div>
+        <div class="field"><label>自动签到间隔（小时）</label><input id="c_autoSigninHours" type="number" min="1" max="72" value="${c.admin?.autoSigninIntervalHours??12}"></div>
       </div></div>
       <div class="row"><button class="primary" onclick="saveConfig()">保存基础/熔断/管理页配置</button>
         <span class="hint">配置文件：<code>${esc(d.path)}</code></span></div>
@@ -568,6 +570,8 @@ async function saveConfig(){
     admin: {
       enabled: document.getElementById('c_adminOn').checked,
       failoverHeader: document.getElementById('c_foHeader').checked,
+      autoSignin: document.getElementById('c_autoSignin').checked,
+      autoSigninIntervalHours: +document.getElementById('c_autoSigninHours').value||12,
     },
   };
   try{
@@ -666,7 +670,7 @@ function renderSigninContent(errMsg){
   }
   const accounts = signinData?.accounts || [];
   if(!accounts.length){
-    container.innerHTML = '<div class="hint">未检测到可用签到账号（支持 Trae 和 WorkBuddy 账号自动扫描）。</div>';
+    container.innerHTML = '<div class="hint">未检测到可用签到账号（支持 Trae 和 WorkBuddy 账号自动扫描或手工配置）。</div>';
     return;
   }
 
@@ -677,9 +681,10 @@ function renderSigninContent(errMsg){
           <th>平台</th>
           <th>账号标签</th>
           <th>今日状态</th>
-          <th>积分</th>
-          <th>连续天数</th>
-          <th>备注</th>
+          <th>可用额度 / 积分</th>
+          <th>今日额度</th>
+          <th>连签天数</th>
+          <th>额度与状态详情</th>
         </tr>
       </thead>
       <tbody>
@@ -704,6 +709,9 @@ function renderSigninContent(errMsg){
 
           const label = acc.label || acc.accountLabel || acc.name || '-';
           const credits = (acc.totalCredits != null && acc.totalCredits !== '') ? fmt(acc.totalCredits) : '-';
+          const todayInc = (acc.todayCredit != null && acc.todayCredit !== '')
+            ? `<span style="color:var(--ok);font-weight:600">+${acc.todayCredit}</span>`
+            : (acc.todayCheckedIn === true ? '<span class="hint">已获取</span>' : '-');
           const streak = (acc.streakDays != null && acc.streakDays !== '') ? (acc.streakDays + ' 天') : '-';
           const report = acc.report || acc.errorDetail || '-';
 
@@ -711,7 +719,8 @@ function renderSigninContent(errMsg){
             <td>${platBadge}</td>
             <td class="mono">${esc(label)}</td>
             <td>${statusBadge}</td>
-            <td class="mono">${credits}</td>
+            <td class="mono" style="font-weight:600">${credits}</td>
+            <td class="mono">${todayInc}</td>
             <td class="mono">${streak}</td>
             <td class="hint">${esc(report)}</td>
           </tr>`;
@@ -723,19 +732,21 @@ function renderSigninContent(errMsg){
 
 async function renderSignin(){
   const el = document.getElementById('content');
+  const autoOn = signinData?.autoSigninEnabled !== false;
   el.innerHTML = `
     <div class="card">
-      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px">
-        <div class="row" style="margin-bottom:0">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <div class="row" style="margin-bottom:0;align-items:center">
           <button id="btn_run_signin" class="primary" onclick="runAllSignin()">全部签到</button>
-          <span id="signin_last_run" class="hint" style="margin-left:8px">上次运行：${fmtLastRun(signinLastRun)}</span>
+          <button id="btn_refresh_signin" class="small" onclick="fetchSigninStatus()" style="margin-left:8px">刷新状态与额度</button>
+          <span id="signin_last_run" class="hint" style="margin-left:12px">上次运行：${fmtLastRun(signinLastRun)}</span>
+        </div>
+        <div style="font-size:12px;color:var(--dim)">
+          后台自动签到：<span class="pill ${autoOn?'ok':'dim'}">${autoOn?'已启用（启动及周期巡检）':'已停用'}</span>
         </div>
       </div>
       <div id="signin_table_container">
         <div class="hint">加载中…</div>
-      </div>
-      <div class="row" style="margin-top:14px">
-        <button id="btn_refresh_signin" class="small" onclick="fetchSigninStatus()">刷新状态</button>
       </div>
     </div>
   `;

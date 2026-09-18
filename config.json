@@ -42,6 +42,8 @@
   },
   "admin": {
     "enabled": true,
-    "failoverHeader": true
+    "failoverHeader": true,
+    "autoSignin": true,
+    "autoSigninIntervalHours": 12
   }
 }

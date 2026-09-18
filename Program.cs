@@ -77,6 +77,38 @@ _ = Task.Run(async () =>
     {
         Console.WriteLine($"Dynamic model refresh skipped: {e.Message}");
     }
+
+    // 后台自动签到：账号发现完成后，若启用则自动执行全账号签到，并按间隔周期巡检
+    _ = Task.Run(async () =>
+    {
+        await Task.Delay(2000);
+        if (!rt.Config.Current.Admin.AutoSignin) return;
+
+        async Task TryAutoSigninAsync(string trigger)
+        {
+            try
+            {
+                Console.WriteLine($"[AutoSignin] Triggered ({trigger}), executing for all accounts...");
+                var results = await AdminApi.SigninServiceInstance.RunAllAsync(rt);
+                var succ = results.Count(r => r.TodayCheckedIn == true || r.Result is "CLAIMED" or "ALREADY" or "OK");
+                Console.WriteLine($"[AutoSignin] Done: {succ}/{results.Count} accounts ready/signed in.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AutoSignin] Skipped/Failed: {ex.Message}");
+            }
+        }
+
+        await TryAutoSigninAsync("startup");
+
+        while (true)
+        {
+            var hours = Math.Max(1, rt.Config.Current.Admin.AutoSigninIntervalHours);
+            await Task.Delay(TimeSpan.FromHours(hours));
+            if (rt.Config.Current.Admin.AutoSignin)
+                await TryAutoSigninAsync("periodic");
+        }
+    });
 });
 
 await app.StartAsync();
