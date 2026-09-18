@@ -296,7 +296,55 @@ public static class AdminApi
             rt.ConfigStore.WriteRaw(raw);
             return Json(new { ok = true, path = rt.ConfigStore.Path });
         });
+
+        // ─── 签到 API ────────────────────────────────────────────────────────
+
+        app.MapGet("/admin/api/signin/status", async (HttpContext ctx) =>
+        {
+            if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
+            var accounts = CollectSigninAccounts(rt);
+            var results = new List<SigninResult>();
+            foreach (var acc in accounts)
+                results.Add(await _signin.GetStatusAsync(acc, ctx.RequestAborted));
+            return Json(new { accounts = results.Select(ToJson) });
+        });
+
+        app.MapPost("/admin/api/signin/run", async (HttpContext ctx) =>
+        {
+            if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
+            var accounts = CollectSigninAccounts(rt);
+            var results = new List<SigninResult>();
+            foreach (var acc in accounts)
+            {
+                results.Add(await _signin.SigninAsync(acc, ctx.RequestAborted));
+                if (accounts.Count > 1) await Task.Delay(1200, ctx.RequestAborted);
+            }
+            return Json(new { accounts = results.Select(ToJson) });
+        });
     }
+
+    // ─── 签到辅助 ─────────────────────────────────────────────────────────
+
+    private static readonly SigninService _signin = new();
+    private static readonly string[] SigninAdapters = ["codebuddy", "traecn", "traework"];
+
+    private static IReadOnlyList<AdapterAccount> CollectSigninAccounts(ProxyHubRuntime rt) =>
+        SigninAdapters.SelectMany(id => rt.Accounts.AccountsOf(id)).ToList();
+
+    private static object ToJson(SigninResult r) => new
+    {
+        adapterId = r.AdapterId,
+        label = r.AccountLabel,
+        platform = r.Platform,
+        result = r.Result,
+        report = r.Report,
+        totalCredits = r.TotalCredits,
+        streakDays = r.StreakDays,
+        todayCheckedIn = r.TodayCheckedIn,
+        errorDetail = r.ErrorDetail,
+    };
+
+    // ─── 其他私有成员 ─────────────────────────────────────────────────────
 
     private sealed record GroupPayload(IReadOnlyList<string>? Match, IReadOnlyList<string>? Prefer, string? Description);
 
