@@ -374,7 +374,9 @@ async function renderAccounts(){
               <button class="small" onclick="moveAccount('${esc(a.adapter)}','${esc(acc.accountId)}',1)" ${idx===a.accounts.length-1?'disabled':''}>↓</button>
             </td>
             <td class="mono" style="font-weight:600">${esc(acc.userId||acc.accountId)}</td>
-            <td class="mono" style="color:var(--ok);font-weight:600">${acc.credits!=null?fmt(acc.credits):'-'}</td>
+            <td class="mono" style="font-weight:600;cursor:pointer" title="点击可手工修改/设定积分额度" onclick="editCredit('${esc(a.adapter)}','${esc(acc.accountId)}',${acc.credits!=null?acc.credits:'null'})">
+              ${acc.credits!=null ? `<span style="color:var(--ok)">${fmt(acc.credits)}</span>` : (a.adapter==='traecn' ? '<span class="pill ok" style="font-size:11px" title="TraeCN 公测免扣积分">公测不限</span>' : '<span class="hint">-</span>')}
+            </td>
             <td>${acc.enabled!==false?'<span class="pill ok">启用</span>':'<span class="pill dim">已禁用</span>'}</td>
             <td class="mono" title="${esc(acc.source||'-')}" style="max-width:260px;overflow:hidden;text-overflow:ellipsis">${esc(acc.source||'-')}</td>
             <td>${acc.discovered?'<span class="pill dim">自动发现</span>':'<span class="pill warn">手工录入</span>'}</td>
@@ -390,6 +392,18 @@ async function renderAccounts(){
       <div class="card"><h3>全部熔断节点</h3><div id="bk"></div></div>`;
     renderBreakers(d.breakers||[]);
   }catch(e){ el.innerHTML = `<div class="card" style="color:var(--err)">${esc(e.message)}</div>`; }
+}
+
+async function editCredit(adapter, accountId, current){
+  const val = prompt(`修改 [${adapter}] ${accountId} 的积分额度:`, current ?? 0);
+  if(val === null) return;
+  const num = parseInt(val, 10);
+  if(isNaN(num)) return toast('请输入有效数字', true);
+  try {
+    await api('/admin/api/accounts/credit', { method: 'POST', body: JSON.stringify({ adapter, accountId, credits: num }) });
+    toast('积分已更新');
+    render();
+  } catch(e) { toast(e.message, true); }
 }
 
 async function toggleAccount(adapter, accountId, enabled){

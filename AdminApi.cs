@@ -268,6 +268,20 @@ public static class AdminApi
             return Json(new { ok = true });
         });
 
+        app.MapPost("/admin/api/accounts/credit", async (HttpContext ctx) =>
+        {
+            if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
+            var body = await JsonNode.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted) as JsonObject;
+            var adapter = body?["adapter"]?.GetValue<string>();
+            var accountId = body?["accountId"]?.GetValue<string>();
+            var credits = body?["credits"]?.GetValue<int>();
+            if (string.IsNullOrEmpty(adapter) || string.IsNullOrEmpty(accountId) || !credits.HasValue)
+                return Error("adapter, accountId and credits required", StatusCodes.Status400BadRequest);
+
+            rt.Accounts.UpdateCredit(adapter, accountId, credits.Value);
+            return Json(new { ok = true, adapter, accountId, credits = credits.Value });
+        });
+
         app.MapDelete("/admin/api/accounts/{adapter}/{accountId}", (string adapter, string accountId, HttpContext ctx) =>
         {
             if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);

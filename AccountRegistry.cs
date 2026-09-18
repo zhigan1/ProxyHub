@@ -153,10 +153,11 @@ public sealed class AccountRegistry
         _customOrder[tgtKey] = curOrder;
     }
 
-    public void UpdateCredit(string adapterId, string accountId, int credits)
+    public void UpdateCredit(string adapterId, string accountId, int? credits)
     {
         var key = AccountKey(adapterId, accountId);
-        _credits[key] = credits;
+        if (credits.HasValue) _credits[key] = credits.Value;
+        else _credits.TryRemove(key, out _);
     }
 
     private static string AccountKey(string adapterId, string accountId) => $"{adapterId}:{accountId}";
