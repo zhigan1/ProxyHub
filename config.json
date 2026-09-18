@@ -1,0 +1,47 @@
+{
+  "port": 8265,
+  "proxyKey": "",
+  "timeoutMs": 120000,
+  "adapters": {
+    "codebuddy": true,
+    "traecn": true,
+    "traework": true,
+    "qoder": true
+  },
+  "groups": {
+    "deepseek-v4.1-flash-auto": {
+      "match": ["*deepseek*v4.1*flash*", "*deepseek*4.1*flash*", "deepseek-v4.1-flash"],
+      "prefer": ["codebuddy", "traecn", "traework", "qoder"],
+      "description": "deepseek-v4.1-flash 全平台自动切换（所有账号轮次制）"
+    },
+    "auto-flash": {
+      "match": ["*-flash"],
+      "prefer": ["codebuddy", "traecn", "traework", "qoder"],
+      "description": "速度优先：全部 flash 档模型自动切换"
+    },
+    "auto-pro": {
+      "match": ["*-pro", "*-max"],
+      "prefer": ["codebuddy", "traecn", "traework", "qoder"],
+      "description": "质量优先：pro / max 档模型自动切换"
+    },
+    "auto-glm": {
+      "match": ["*glm*"],
+      "prefer": ["codebuddy", "traecn", "traework", "qoder"],
+      "description": "GLM 家族全部版本"
+    },
+    "auto": {
+      "match": ["*"],
+      "prefer": ["codebuddy", "traecn", "traework", "qoder"],
+      "description": "全部模型兜底"
+    }
+  },
+  "circuitBreaker": {
+    "failureThreshold": 2,
+    "cooldownSeconds": 60,
+    "halfOpenProbe": true
+  },
+  "admin": {
+    "enabled": true,
+    "failoverHeader": true
+  }
+}
