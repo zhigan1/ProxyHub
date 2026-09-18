@@ -118,7 +118,14 @@ public sealed class CodeBuddyAdapter : IAdapter
             var data = JsonNode.Parse(File.ReadAllText(file)) as JsonObject;
             token = data?["auth"]?["accessToken"]?.GetValue<string>();
             uid = data?["account"]?["uid"]?.ToString();
-            nickname = data?["account"]?["nickname"]?.ToString();
+            var phone = data?["account"]?["phoneNumber"]?.ToString();
+            var nick = data?["account"]?["nickname"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(phone))
+                nickname = phone;
+            else if (!string.IsNullOrWhiteSpace(nick) && !nick.Contains('\uFFFD') && !nick.Contains('?'))
+                nickname = nick;
+            else
+                nickname = uid;
             return !string.IsNullOrEmpty(token) && !string.IsNullOrEmpty(uid);
         }
         catch
