@@ -293,6 +293,7 @@ public static class AdminApi
         {
             if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
             await rt.Accounts.RefreshAsync(rt.Adapters, ctx.RequestAborted);
+            try { await SigninServiceInstance.GetStatusAllAsync(rt, ctx.RequestAborted); } catch { }
             return Json(new { ok = true, total = rt.Accounts.TotalCount, manual = rt.Accounts.ManualCount });
         });
 
