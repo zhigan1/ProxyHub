@@ -69,25 +69,25 @@ public sealed class SigninService
 
         foreach (var (key, value) in storage)
         {
-            if (!key.StartsWith("iCubeAuthInfo://", StringComparison.Ordinal)) continue;
-            var rawValue = value?.GetValue<string>();
-            if (rawValue is null) continue;
-
-            string? decrypted;
-            try { decrypted = TcCrypto.DecryptTc(rawValue); }
-            catch { continue; }
-
-            if (key == "iCubeAuthInfo://icube.cloudide")
-            {
-                var obj = JsonNode.Parse(decrypted) as JsonObject;
-                token = obj?["token"]?.GetValue<string>();
-            }
-            else if (key.StartsWith("iCubeAuthInfo://icube-dc:", StringComparison.Ordinal))
+            // deviceId 来自键名（iCubeAuthInfo://icube-dc:{数字}），无需解密值
+            if (key.StartsWith("iCubeAuthInfo://icube-dc:", StringComparison.Ordinal))
             {
                 var candidate = key["iCubeAuthInfo://icube-dc:".Length..].Trim();
                 if (System.Text.RegularExpressions.Regex.IsMatch(candidate, @"^\d{8,20}$"))
                     deviceId = candidate;
+                continue;
             }
+            if (key != "iCubeAuthInfo://icube.cloudide") continue;
+
+            var rawValue = value?.GetValue<string>();
+            if (rawValue is null) continue;
+
+            string? decrypted;
+            try { decrypted = rawValue.TrimStart().StartsWith('{') ? rawValue : TcCrypto.DecryptTc(rawValue); }
+            catch { continue; }
+
+            var obj = JsonNode.Parse(decrypted) as JsonObject;
+            token = obj?["token"]?.GetValue<string>();
         }
 
         if (token is null) return null;
@@ -104,7 +104,8 @@ public sealed class SigninService
         req.Headers.TryAddWithoutValidation("x-client-id", TraeClientId);
         req.Headers.TryAddWithoutValidation("x-app-version", TraeAppVersion);
         req.Headers.TryAddWithoutValidation("x-device-id", deviceId);
-        req.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+        if (method != HttpMethod.Get)
+            req.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
         return req;
     }
 
@@ -142,7 +143,7 @@ public sealed class SigninService
             using var statusResp = await _http.SendAsync(statusReq, ct);
             var statusBody = await ParseJson(statusResp, ct);
 
-            var todayChecked = statusBody?["today_checked_in"]?.GetValue<bool>();
+            var todayChecked = Dig<bool>(statusBody, "today_checked_in");
             if (todayChecked == true)
                 return BuildTraeResult(account, statusBody, statusResp.StatusCode, "ALREADY");
 
@@ -153,14 +154,19 @@ public sealed class SigninService
                 return Fail(account, "trae", "NO_SESSION", $"登录态失效（HTTP {(int)claimResp.StatusCode}）", null);
 
             var claimBody = await ParseJson(claimResp, ct);
+            var credit = Dig<int?>(claimBody, "credit") ?? Dig<int?>(claimBody, "credits");
+            if ((int)claimResp.StatusCode is not (>= 200 and < 300) || credit is null)
+            {
+                var errMsg = Dig<string>(claimBody, "message") ?? Dig<string>(claimBody, "msg") ?? $"HTTP {(int)claimResp.StatusCode}";
+                return Fail(account, "trae", "ERROR", $"签到失败：{errMsg}", null);
+            }
 
             // 3. 刷新状态（获取最新积分）
             using var req2 = TraeRequest("/ide/user/signin/status", token, deviceId, HttpMethod.Get);
             using var resp2 = await _http.SendAsync(req2, ct);
             var fresh = await ParseJson(resp2, ct);
 
-            return BuildTraeResult(account, fresh ?? claimBody, claimResp.StatusCode, "CLAIMED",
-                Dig<int?>(claimBody, "credit") ?? Dig<int?>(claimBody, "credits"));
+            return BuildTraeResult(account, fresh ?? claimBody, claimResp.StatusCode, "CLAIMED", credit);
         }
         catch (Exception e)
         {
@@ -177,12 +183,16 @@ public sealed class SigninService
         var streakDays = Dig<int?>(body, "streak_days") ?? Dig<int?>(body, "streakDays");
         var todayChecked = Dig<bool?>(body, "today_checked_in") ?? Dig<bool?>(body, "todayCheckedIn");
 
-        var result = forceResult ?? (todayChecked == true ? "ALREADY" : "UNKNOWN");
+        if (forceResult is null && (int)code is < 200 or >= 300)
+            return Fail(acc, "trae", "ERROR", $"查询状态失败（HTTP {(int)code}）", null);
+
+        var result = forceResult ?? "OK"; // 状态查询成功即为 OK，今日是否已签看 TodayCheckedIn 字段
         var report = result switch
         {
             "CLAIMED" => $"签到成功 +{credit}积分 · 连续{streakDays}天 · 累计{totalCredits}积分",
             "ALREADY" => $"今日已签到 · 连续{streakDays}天 · 累计{totalCredits}积分",
-            _ => body?.ToJsonString()[..Math.Min(120, body.ToJsonString().Length)] ?? "未知",
+            "OK" => $"积分 {totalCredits} · 连续{streakDays}天 · 今日{(todayChecked == true ? "已签" : "未签")}",
+            _ => $"上游返回异常（HTTP {(int)code}）",
         };
         return new SigninResult(acc.AdapterId, acc.Label, "trae", result, report, totalCredits, streakDays, todayChecked);
     }
@@ -203,16 +213,16 @@ public sealed class SigninService
             if (obj is null) return null;
             var auth = obj["auth"] as JsonObject;
             var acct = obj["account"] as JsonObject;
-            var uid = acct?["uid"]?.GetValue<string>();
+            var uid = acct?["uid"]?.ToString(); // uid 可能是数字，ToString 宽容处理
             var token = auth?["accessToken"]?.GetValue<string>();
             if (string.IsNullOrEmpty(uid) || string.IsNullOrEmpty(token)) return null;
             var ep = auth?["endpoint"]?.GetValue<string>() ?? WbDefaultEndpoint;
             ep = ep.TrimEnd('/');
             return new WbAccount(
-                acct?["nickname"]?.GetValue<string>() ?? uid,
+                acct?["nickname"]?.ToString() ?? uid,
                 uid, token,
-                acct?["enterpriseId"]?.GetValue<string>(),
-                auth?["domain"]?.GetValue<string>(),
+                acct?["enterpriseId"]?.ToString(),
+                auth?["domain"]?.ToString(),
                 ep);
         }
         catch { return null; }
@@ -245,7 +255,11 @@ public sealed class SigninService
             using var resp = await _http.SendAsync(req, ct);
             if ((int)resp.StatusCode is 401 or 403)
                 return Fail(account, "workbuddy", "NO_SESSION", $"登录态失效（HTTP {(int)resp.StatusCode}）", null);
+            if ((int)resp.StatusCode is < 200 or >= 300)
+                return Fail(account, "workbuddy", "ERROR", $"查询状态失败（HTTP {(int)resp.StatusCode}）", null);
             var body = await ParseJson(resp, ct);
+            if (Dig<bool>(body, "active") == false)
+                return new SigninResult(account.AdapterId, account.Label, "workbuddy", "INACTIVE", "签到活动未开启", null, null, null);
             return BuildWbResult(account, body, resp.StatusCode, null, null);
         }
         catch (Exception e)
@@ -265,6 +279,8 @@ public sealed class SigninService
             using var statusResp = await _http.SendAsync(statusReq, ct);
             if ((int)statusResp.StatusCode is 401 or 403)
                 return Fail(account, "workbuddy", "NO_SESSION", $"登录态失效（HTTP {(int)statusResp.StatusCode}）", null);
+            if ((int)statusResp.StatusCode is < 200 or >= 300)
+                return Fail(account, "workbuddy", "ERROR", $"查询状态失败（HTTP {(int)statusResp.StatusCode}）", null);
 
             var statusBody = await ParseJson(statusResp, ct);
             var active = Dig<bool>(statusBody, "active");
@@ -311,13 +327,18 @@ public sealed class SigninService
         var totalCredits = Dig<int?>(body, "total_credits");
         var streakDays = Dig<int?>(body, "streak_days");
         var todayChecked = Dig<bool?>(body, "today_checked_in");
-        var result = forceResult ?? (todayChecked == true ? "ALREADY" : "UNKNOWN");
+
+        if (forceResult is null && (int)code is < 200 or >= 300)
+            return Fail(acc, "workbuddy", "ERROR", $"查询状态失败（HTTP {(int)code}）", null);
+
+        var result = forceResult ?? "OK"; // 状态查询成功即为 OK，今日是否已签看 TodayCheckedIn 字段
         var report = result switch
         {
             "CLAIMED" => $"签到成功 +{credit}积分 · 连续{streakDays}天 · 累计{totalCredits}积分",
             "ALREADY" => $"今日已签到 · 连续{streakDays}天 · 累计{totalCredits}积分",
             "INACTIVE" => "签到活动未开启",
-            _ => body?.ToJsonString()[..Math.Min(120, body.ToJsonString().Length)] ?? "未知",
+            "OK" => $"积分 {totalCredits} · 连续{streakDays}天 · 今日{(todayChecked == true ? "已签" : "未签")}",
+            _ => $"上游返回异常（HTTP {(int)code}）",
         };
         return new SigninResult(acc.AdapterId, acc.Label, "workbuddy", result, report, totalCredits, streakDays, todayChecked);
     }
