@@ -163,6 +163,54 @@ public static class AdminApi
             });
         });
 
+        // 自动调度实时路由：每个分组当前"会命中"的候选（平台/账号/积分/真实模型/调度状态）。
+        // 不调用 TryEnter（有半开探测占用副作用），纯 Snapshot 只读推导，与执行器的选择规则一致。
+        app.MapGet("/admin/api/groups/active-routes", (HttpContext ctx) =>
+        {
+            if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
+
+            var states = rt.Breakers.Snapshot().ToDictionary(s => s.Key, s => s.State);
+            string StateOf(string key) => states.TryGetValue(key, out var st) ? st : "closed";
+            static string Worst(string a, string b) =>
+                a == "open" || b == "open" ? "open"
+                : a == "half-open" || b == "half-open" ? "half-open"
+                : "closed";
+
+            var routes = rt.Groups.Names().Select(name =>
+            {
+                var g = rt.Groups.Get(name);
+                var chain = rt.Groups.Expand(name, rt.Registry, rt.Accounts, rt.Adapters);
+                var idx = chain.FindIndex(n => StateOf(n.AccountBreakerKey) != "open" && StateOf(n.BreakerKey) != "open");
+                var node = idx >= 0 ? chain[idx] : null;
+                var self = node is null ? "open" : Worst(StateOf(node.AccountBreakerKey), StateOf(node.BreakerKey));
+                // normal=正常直通 half-open=降级切换中（半开探测）avoiding=避让中（首选熔断已后移）blocked=全部熔断 empty=无候选
+                var status = chain.Count == 0 ? "empty"
+                    : node is null ? "blocked"
+                    : idx > 0 ? "avoiding"
+                    : self == "half-open" ? "half-open"
+                    : "normal";
+                return new
+                {
+                    group = name,
+                    match = g?.Match ?? (IReadOnlyList<string>)Array.Empty<string>(),
+                    description = g?.Description ?? "",
+                    status,
+                    candidates = chain.Count,
+                    nodeIndex = idx >= 0 ? (int?)idx : null,
+                    adapterId = node?.Adapter.Id,
+                    accountId = node?.Account?.AccountId,
+                    accountLabel = node?.Account?.Label,
+                    userId = node?.Account?.UserId ?? node?.Account?.Label,
+                    credits = node?.Account?.Credits,
+                    model = node?.UpstreamId,
+                    preferredAdapterId = chain.Count > 0 ? chain[0].Adapter.Id : null,
+                    preferredAccountId = chain.Count > 0 ? chain[0].Account?.AccountId : null,
+                    preferredModel = chain.Count > 0 ? chain[0].UpstreamId : null,
+                };
+            }).ToArray();
+            return Json(new { routes });
+        });
+
         // 模型健康矩阵：家族 → 平台 → 模型 / 可用账号数 / 熔断计数；只含统计，不含凭据、路径或 PAT
         app.MapGet("/admin/api/models/matrix", (HttpContext ctx) =>
         {
@@ -325,6 +373,25 @@ public static class AdminApi
             if (key is null) rt.Breakers.ResetAll();
             else rt.Breakers.Reset(key);
             return Json(new { ok = true, reset = key ?? "all" });
+        });
+
+        // 用量多维聚合：按平台汇总 / 模型 TOP 排行 / 按日趋势；可选 from/to（yyyy-MM-dd 闭区间）与 top。
+        // SQLite 持久化可用时查库（含历史），否则回退内存聚合（仅本次进程数据），两种 source 结构一致。
+        app.MapGet("/admin/api/usage/summary", async (HttpContext ctx) =>
+        {
+            if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
+            var from = ctx.Request.Query["from"].FirstOrDefault();
+            var to = ctx.Request.Query["to"].FirstOrDefault();
+            var top = int.TryParse(ctx.Request.Query["top"].FirstOrDefault(), out var t) ? t : 10;
+
+            if (rt.Usage.Store is { } store)
+            {
+                var rows = await store.QueryAsync(from, to);
+                return Json(UsageAggregates.Summarize(rows
+                    .Select(r => new UsageRow(r.AdapterId, r.Model, r.AccountId, r.Date, r.Requests, r.PromptTokens, r.CompletionTokens))
+                    .ToList(), from, to, top, "sqlite"));
+            }
+            return Json(rt.Usage.Aggregate(from, to, top));
         });
 
         app.MapGet("/admin/api/config", (HttpContext ctx) =>

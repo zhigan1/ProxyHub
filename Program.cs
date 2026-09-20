@@ -13,7 +13,22 @@ var config = ProxyHubConfig.Load(configPath);
 var runtimeCfg = new RuntimeConfig(config);
 
 var registry = new Registry();
-var usage = new UsageTracker();
+
+// Token 用量持久化：SQLite（SqlSugar）。路径可配置（config.json usageDbPath / PROXY_HUB_USAGE_DB），
+// 默认用户应用数据目录（不落仓库）；初始化失败降级为纯内存聚合，不影响代理主链路。
+TokenUsageStore? usageStore = null;
+try
+{
+    var dbPath = !string.IsNullOrWhiteSpace(config.UsageDbPath) ? config.UsageDbPath! : ProxyHubConfig.DefaultUsageDbPath();
+    usageStore = new TokenUsageStore(dbPath);
+    usageStore.EnsureCreated();
+    Console.WriteLine($"Usage DB:            {dbPath}");
+}
+catch (Exception e)
+{
+    Console.WriteLine($"Usage persistence disabled: {e.Message}");
+}
+var usage = new UsageTracker(usageStore);
 var groups = new ModelGroups(config.Groups);
 var breakers = new CircuitBreakerRegistry(config.CircuitBreaker);
 var accountRegistry = new AccountRegistry();
@@ -118,3 +133,6 @@ Console.WriteLine($"ProxyHub (.NET) listening on http://127.0.0.1:{config.Port}"
 Console.WriteLine($"Admin UI:               http://127.0.0.1:{config.Port}/admin");
 Console.WriteLine($"Config (hot reload):    {configPath}");
 await app.WaitForShutdownAsync();
+
+// 退出前清空用量持久化队列，避免尾部数据丢失
+await usage.FlushAsync();

@@ -296,7 +296,7 @@ public static class AppFactory
         long? Prompt(JsonObject? u) => u?["prompt_tokens"] is JsonValue p && p.TryGetValue<long>(out var v) ? v : null;
         long? Completion(JsonObject? u) => u?["completion_tokens"] is JsonValue c && c.TryGetValue<long>(out var v) ? v : null;
         rt.Usage.Record(node.Adapter.Id, node.UpstreamId, Prompt(sink.Usage), Completion(sink.Usage),
-            (int)Math.Min(sink.ContentChars, int.MaxValue));
+            (int)Math.Min(sink.ContentChars, int.MaxValue), node.Account?.AccountId);
     }
 
     private static int MapStatus(int statusCode) =>

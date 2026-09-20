@@ -54,6 +54,9 @@ public sealed record ProxyHubConfig
     public int Port { get; init; } = 8265;
     public string ProxyKey { get; init; } = "";
     public int TimeoutMs { get; init; } = 120_000;
+
+    /// <summary>Token 用量 SQLite 库文件路径；空 = 默认应用数据目录（不落仓库目录）。</summary>
+    public string? UsageDbPath { get; init; }
     public IReadOnlyDictionary<string, bool> Adapters { get; init; } = new Dictionary<string, bool>
     {
         ["codebuddy"] = true,
@@ -74,6 +77,10 @@ public sealed record ProxyHubConfig
     public string? SourcePath { get; init; }
 
     public bool IsAdapterEnabled(string id) => Adapters.TryGetValue(id, out var on) && on;
+
+    /// <summary>用量库默认路径：用户应用数据目录/ProxyHub/usage.db（Windows=%LOCALAPPDATA%，Linux=~/.local/share）。</summary>
+    public static string DefaultUsageDbPath() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ProxyHub", "usage.db");
 
     /// <summary>配置文件路径解析：显式参数 &gt; PROXY_HUB_CONFIG 环境变量 &gt; 程序目录 config.json。</summary>
     public static string ResolvePath(string? explicitPath = null) =>
@@ -122,6 +129,7 @@ public sealed record ProxyHubConfig
             Port = ParseInt(Env("PROXY_HUB_PORT") ?? FileStr(file, "port"), 8265),
             ProxyKey = Env("PROXY_HUB_KEY") ?? FileStr(file, "proxyKey") ?? "",
             TimeoutMs = ParseInt(Env("PROXY_HUB_TIMEOUT") ?? FileStr(file, "timeoutMs"), 120_000),
+            UsageDbPath = Env("PROXY_HUB_USAGE_DB") ?? FileStr(file, "usageDbPath"),
             Adapters = new Dictionary<string, bool>
             {
                 ["codebuddy"] = ParseBool(Env("PROXY_ADAPTER_CODEBUDDY"), FileBool(file, "codebuddy") ?? true),
