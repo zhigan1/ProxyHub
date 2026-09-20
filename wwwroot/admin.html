@@ -126,6 +126,34 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--border
 .bar-track{width:100%;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;display:flex}
 .bar-fill{height:100%;transition:width .3s ease}
 .route-item{background:var(--bg3);border:1px solid var(--line);border-radius:6px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+/* ─────────── 账号/熔断页全新布局 ─────────── */
+.account-layout{display:flex;gap:16px;align-items:flex-start;margin-top:14px}
+.account-sidebar{width:190px;flex-shrink:0;display:flex;flex-direction:column;gap:6px}
+.platform-item{padding:8px 12px;border-radius:var(--border-radius);cursor:pointer;display:flex;align-items:center;justify-content:space-between;font-size:13px;font-weight:500;transition:all .15s ease;border:1px solid var(--line);background:var(--bg2);color:var(--fg)}
+.platform-item:hover{background:var(--bg3);border-color:var(--acc)}
+.platform-item.active{background:var(--acc-bg);color:var(--acc);border-color:var(--acc);font-weight:600}
+.platform-item.empty{opacity:0.45}
+.account-main{flex:1;min-width:0}
+.view-toggle{display:inline-flex;background:var(--bg3);border:1px solid var(--line);border-radius:var(--border-radius);padding:2px;gap:2px}
+.view-toggle button{border:none;background:transparent;padding:4px 10px;border-radius:4px;font-size:12px;color:var(--dim);cursor:pointer;transition:all .15s ease}
+.view-toggle button.active{background:var(--bg2);color:var(--acc);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,0.15)}
+.view-toggle button:hover:not(.active){color:var(--fg)}
+.account-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px;margin-bottom:16px}
+.account-card{background:var(--bg2);border:1px solid var(--line);border-radius:var(--border-radius);padding:14px;display:flex;flex-direction:column;justify-content:space-between;gap:12px;box-shadow:var(--card-shadow);transition:all .15s ease}
+.account-card:hover{border-color:var(--acc)}
+.account-card.disabled{opacity:0.55;border-style:dashed}
+.account-card-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.account-card-title{display:flex;align-items:center;gap:8px;min-width:0}
+.account-card-body{display:flex;flex-direction:column;gap:10px}
+.account-credit-box{background:var(--bg3);border:1px solid var(--line);border-radius:6px;padding:10px 12px}
+.account-card-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.account-card-actions{display:flex;align-items:center;justify-content:space-between;padding-top:8px;border-top:1px solid var(--line);gap:8px}
+@media (max-width:800px){
+  .account-layout{flex-direction:column}
+  .account-sidebar{width:100%;flex-direction:row;overflow-x:auto;padding-bottom:6px}
+  .platform-item{white-space:nowrap;flex-shrink:0}
+  .account-grid{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body>
@@ -850,57 +878,320 @@ async function delGroup(name){
 }
 
 /* ─────────── Accounts & breakers ─────────── */
+let ACCOUNT_VIEW = localStorage.getItem('ph_account_view') || 'cards';
+let SELECTED_PLATFORM = 'all';
+let ACCOUNTS_CACHE = null;
+
+function switchAccountView(v){
+  ACCOUNT_VIEW = v;
+  localStorage.setItem('ph_account_view', v);
+  renderAccountMain();
+}
+
+function selectPlatform(plat){
+  SELECTED_PLATFORM = plat;
+  renderAccountsFrame();
+}
+
+function getPlatformBadge(adapter){
+  const ad = (adapter || '').toLowerCase();
+  if(ad.includes('traecn')) return '<span class="pill acc">traecn</span>';
+  if(ad.includes('traework')) return '<span class="pill acc">traework</span>';
+  if(ad.includes('trae')) return '<span class="pill acc">trae</span>';
+  if(ad.includes('codebuddy') || ad.includes('workbuddy')) return '<span class="pill warn">workbuddy</span>';
+  if(ad.includes('qoder')) return '<span class="pill dim">qoder</span>';
+  return `<span class="pill dim">${esc(adapter)}</span>`;
+}
+
+function getPlatformCounts(accountsGroupList){
+  const counts = { all: 0, codebuddy: 0, traecn: 0, traework: 0, qoder: 0 };
+  (accountsGroupList || []).forEach(g => {
+    const count = (g.accounts || []).length;
+    counts.all += count;
+    const ad = (g.adapter || '').toLowerCase();
+    if(counts[ad] !== undefined){
+      counts[ad] += count;
+    } else {
+      counts[ad] = count;
+    }
+  });
+  return counts;
+}
+
+function renderAccountSidebar(){
+  const counts = getPlatformCounts(ACCOUNTS_CACHE?.accounts);
+  const platforms = [
+    { id: 'all', name: '全部' },
+    { id: 'codebuddy', name: 'CodeBuddy' },
+    { id: 'traecn', name: 'TraeCN' },
+    { id: 'traework', name: 'TraeWork' },
+    { id: 'qoder', name: 'Qoder' },
+  ];
+
+  (ACCOUNTS_CACHE?.accounts || []).forEach(g => {
+    const id = (g.adapter || '').toLowerCase();
+    if(!platforms.some(p => p.id === id)){
+      platforms.push({ id, name: g.adapter });
+    }
+  });
+
+  return `
+    <div class="account-sidebar">
+      ${platforms.map(p => {
+        const count = counts[p.id] || 0;
+        const isActive = SELECTED_PLATFORM === p.id;
+        const isEmpty = count === 0;
+        return `
+          <div class="platform-item ${isActive ? 'active' : ''} ${isEmpty ? 'empty' : ''}" onclick="selectPlatform('${p.id}')">
+            <span>${p.name}</span>
+            <span class="pill ${isActive ? 'acc' : 'dim'}" style="font-size:11px;padding:1px 6px">${count}</span>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function getFilteredAccountGroups(){
+  const groups = ACCOUNTS_CACHE?.accounts || [];
+  if(SELECTED_PLATFORM === 'all') return groups;
+  return groups.filter(g => (g.adapter || '').toLowerCase() === SELECTED_PLATFORM.toLowerCase());
+}
+
+function renderAccountCards(groups){
+  let html = '';
+  let totalRendered = 0;
+
+  groups.forEach(g => {
+    const adapter = g.adapter;
+    const accounts = g.accounts || [];
+
+    if(SELECTED_PLATFORM === 'all'){
+      if(accounts.length === 0) return;
+      html += `<div style="margin: 8px 0 10px; font-weight: 600; font-size: 13px; color: var(--dim); display: flex; align-items: center; gap: 8px;">
+        ${getPlatformBadge(adapter)}
+        <span>${esc(adapter)}（${accounts.length} 个账号）</span>
+      </div>`;
+    }
+
+    if(accounts.length === 0){
+      html += `<div class="card hint" style="margin-bottom:14px">该平台未发现可用账号（凭据缺失或未登录对应客户端）</div>`;
+      return;
+    }
+
+    html += `<div class="account-grid">`;
+    accounts.forEach((acc, idx) => {
+      totalRendered++;
+      const isEnabled = acc.enabled !== false;
+      const cardClass = isEnabled ? 'account-card' : 'account-card disabled';
+      const hasBreaker = acc.openBreakers > 0;
+
+      let creditValHtml = '';
+      let progressPercent = 100;
+      let progressColor = 'var(--ok)';
+
+      if(acc.credits != null){
+        creditValHtml = `<span style="color:var(--ok);font-size:22px;font-weight:700;font-family:var(--mono)">${fmt(acc.credits)}</span>`;
+        if(acc.creditsTotal && acc.creditsTotal > 0 && acc.creditsUsed != null){
+          const pct = Math.max(0, Math.min(100, Math.round(((acc.creditsTotal - acc.creditsUsed) / acc.creditsTotal) * 100)));
+          progressPercent = pct;
+        }
+      } else if(adapter === 'traecn'){
+        creditValHtml = `<span class="pill ok" style="font-size:12px" title="TraeCN 公测免扣积分">公测不限</span>`;
+      } else {
+        creditValHtml = `<span class="hint" style="font-size:18px;font-weight:600">—</span>`;
+        progressPercent = 0;
+      }
+
+      if(!isEnabled){
+        progressColor = 'var(--dim)';
+      } else if(hasBreaker){
+        progressColor = 'var(--err)';
+      }
+
+      const uid = acc.userId || acc.accountId || '-';
+      const label = acc.label && acc.label !== uid ? acc.label : '';
+
+      html += `
+        <div class="${cardClass}">
+          <div class="account-card-header">
+            <div class="account-card-title">
+              ${getPlatformBadge(adapter)}
+              <span class="mono hint" style="font-weight:700;font-size:12px">#${idx+1}</span>
+              <div style="min-width:0">
+                <div class="mono" style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px" title="${esc(uid)}">${esc(uid)}</div>
+                ${label ? `<div class="hint" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px" title="${esc(label)}">${esc(label)}</div>` : ''}
+              </div>
+            </div>
+            <span class="pill ${isEnabled ? 'ok' : 'dim'}" style="font-size:11px">${isEnabled ? '● 启用' : '○ 已禁用'}</span>
+          </div>
+
+          <div class="account-card-body">
+            <div class="account-credit-box">
+              <div style="display:flex;justify-content:space-between;align-items:baseline">
+                <div style="cursor:pointer" title="点击修改积分" onclick="editCredit('${esc(adapter)}','${esc(acc.accountId)}',${acc.credits != null ? acc.credits : 'null'})">
+                  ${creditValHtml}
+                </div>
+                <div class="hint" style="font-size:11px">
+                  ${acc.creditsTotal ? `总额 ${fmt(acc.creditsTotal)}` : (acc.credits != null ? '剩余额度 ✎' : (adapter === 'traecn' ? '免扣积分' : '未设置 ✎'))}
+                </div>
+              </div>
+              <div class="bar-track" style="height:4px;margin-top:8px">
+                <div class="bar-fill" style="width:${progressPercent}%;background:${progressColor}"></div>
+              </div>
+            </div>
+
+            <div class="hint mono" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acc.source || '-')}">
+              <span style="color:var(--dim)">来源:</span> ${esc(acc.source || '-')}
+            </div>
+
+            <div class="account-card-meta">
+              ${acc.discovered ? '<span class="pill dim" style="font-size:11px">自动发现</span>' : '<span class="pill warn" style="font-size:11px">手工录入</span>'}
+              ${hasBreaker ? `<span class="pill err" style="font-size:11px">熔断: ${acc.openBreakers}</span>` : '<span class="pill ok" style="font-size:11px">熔断: 0</span>'}
+            </div>
+          </div>
+
+          <div class="account-card-actions">
+            <div class="row" style="margin-bottom:0;gap:4px">
+              <button class="small" onclick="moveAccount('${esc(adapter)}','${esc(acc.accountId)}',-1)" ${idx === 0 ? 'disabled' : ''} title="上移">↑</button>
+              <button class="small" onclick="moveAccount('${esc(adapter)}','${esc(acc.accountId)}',1)" ${idx === accounts.length - 1 ? 'disabled' : ''} title="下移">↓</button>
+            </div>
+            <div class="row" style="margin-bottom:0;gap:6px">
+              <button class="small ${isEnabled ? '' : 'primary'}" onclick="toggleAccount('${esc(adapter)}','${esc(acc.accountId)}',${!isEnabled})">
+                ${isEnabled ? '禁用' : '启用'}
+              </button>
+              <button class="small danger" onclick="deleteAccount('${esc(adapter)}','${esc(acc.accountId)}')">删除</button>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+    html += `</div>`;
+  });
+
+  if(totalRendered === 0){
+    return `<div class="card hint">未检测到符合条件的账号。</div>`;
+  }
+
+  return html;
+}
+
+function renderAccountTable(groups){
+  if(!groups.length){
+    return '<div class="card hint">未检测到符合条件的账号。</div>';
+  }
+
+  return groups.map(a => `
+    <div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h3 style="margin-bottom:0">${esc(a.adapter)}（${(a.accounts||[]).length} 个账号）</h3>
+        ${getPlatformBadge(a.adapter)}
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:70px">顺序</th>
+            <th>用户ID</th>
+            <th>积分</th>
+            <th>状态</th>
+            <th>来源</th>
+            <th>类型</th>
+            <th>熔断</th>
+            <th style="width:160px">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${(a.accounts && a.accounts.length) ? a.accounts.map((acc, idx) => `
+            <tr style="${acc.enabled === false ? 'opacity:0.45' : ''}">
+              <td class="mono">
+                <span style="font-weight:bold;margin-right:4px">#${idx + 1}</span>
+                <button class="small" onclick="moveAccount('${esc(a.adapter)}','${esc(acc.accountId)}',-1)" ${idx === 0 ? 'disabled' : ''}>↑</button>
+                <button class="small" onclick="moveAccount('${esc(a.adapter)}','${esc(acc.accountId)}',1)" ${idx === a.accounts.length - 1 ? 'disabled' : ''}>↓</button>
+              </td>
+              <td class="mono" style="font-weight:600">${esc(acc.userId || acc.accountId)}</td>
+              <td class="mono" style="font-weight:600;cursor:pointer" title="点击可手工修改/设定积分额度" onclick="editCredit('${esc(a.adapter)}','${esc(acc.accountId)}',${acc.credits != null ? acc.credits : 'null'})">
+                ${acc.credits != null ? `<span style="color:var(--ok)">${fmt(acc.credits)}</span>` : (a.adapter === 'traecn' ? '<span class="pill ok" style="font-size:11px" title="TraeCN 公测免扣积分">公测不限</span>' : '<span class="hint">-</span>')}
+              </td>
+              <td>${acc.enabled !== false ? '<span class="pill ok">启用</span>' : '<span class="pill dim">已禁用</span>'}</td>
+              <td class="mono" title="${esc(acc.source || '-')}" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(acc.source || '-')}</td>
+              <td>${acc.discovered ? '<span class="pill dim">自动发现</span>' : '<span class="pill warn">手工录入</span>'}</td>
+              <td>${acc.openBreakers ? `<span class="pill err">${acc.openBreakers}</span>` : '<span class="pill ok">0</span>'}</td>
+              <td>
+                <button class="small ${acc.enabled !== false ? '' : 'primary'}" onclick="toggleAccount('${esc(a.adapter)}','${esc(acc.accountId)}',${acc.enabled === false})">
+                  ${acc.enabled !== false ? '禁用' : '启用'}
+                </button>
+                <button class="small danger" onclick="deleteAccount('${esc(a.adapter)}','${esc(acc.accountId)}')">删除</button>
+              </td>
+            </tr>
+          `).join('') : '<tr><td colspan="8" class="hint">未发现账号（凭据缺失或未登录对应客户端）</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+  `).join('');
+}
+
+function renderAccountsFrame(){
+  const el = document.getElementById('content');
+  if(!el) return;
+
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:14px">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px">
+        <div class="row" style="margin-bottom:0;align-items:center">
+          <button class="primary" onclick="addAccountModal()">＋ 手工添加账号</button>
+          <button onclick="refreshAccounts()">重新扫描本机账号</button>
+          <button onclick="refreshCredits()">一键查询/刷新全部积分</button>
+          <button class="danger" onclick="resetAll()">复位全部熔断</button>
+        </div>
+        <div class="row" style="margin-bottom:0;align-items:center">
+          <div class="view-toggle">
+            <button class="${ACCOUNT_VIEW === 'cards' ? 'active' : ''}" onclick="switchAccountView('cards')">⊞ 卡片</button>
+            <button class="${ACCOUNT_VIEW === 'table' ? 'active' : ''}" onclick="switchAccountView('table')">≡ 表格</button>
+          </div>
+        </div>
+      </div>
+      <div class="hint">多账号用于熔断后自动按顺序切号。禁用的账号不参与任何请求调度。</div>
+    </div>
+
+    <div class="account-layout">
+      ${renderAccountSidebar()}
+      <div class="account-main" id="account_list_container">
+        ${ACCOUNT_VIEW === 'cards' ? renderAccountCards(getFilteredAccountGroups()) : renderAccountTable(getFilteredAccountGroups())}
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h3>全部熔断节点</h3>
+      <div id="bk"></div>
+    </div>
+  `;
+
+  renderBreakers(ACCOUNTS_CACHE?.breakers || []);
+}
+
+function renderAccountMain(){
+  const container = document.getElementById('account_list_container');
+  if(!container) return renderAccountsFrame();
+  container.innerHTML = ACCOUNT_VIEW === 'cards' 
+    ? renderAccountCards(getFilteredAccountGroups()) 
+    : renderAccountTable(getFilteredAccountGroups());
+
+  document.querySelectorAll('.view-toggle button').forEach(btn => {
+    if(btn.textContent.includes('卡片')) btn.className = ACCOUNT_VIEW === 'cards' ? 'active' : '';
+    if(btn.textContent.includes('表格')) btn.className = ACCOUNT_VIEW === 'table' ? 'active' : '';
+  });
+}
+
 async function renderAccounts(){
   const el = document.getElementById('content');
   el.innerHTML = '<div class="card hint">加载中…</div>';
   try{
     const d = await api('/admin/api/accounts');
-    el.innerHTML = `
-      <div class="row">
-        <button class="primary" onclick="addAccountModal()">＋ 手工添加账号</button>
-        <button onclick="refreshAccounts()">重新扫描本机账号</button>
-        <button onclick="refreshCredits()">一键查询/刷新全部积分</button>
-        <button class="danger" onclick="resetAll()">复位全部熔断</button>
-        <span class="hint">多账号用于熔断后自动按顺序切号。禁用的账号不参与任何请求调度。</span>
-      </div>
-      ${(d.accounts||[]).map(a=>`
-        <div class="card"><h3>${esc(a.adapter)}（${a.accounts.length} 个账号）</h3>
-        <table><thead><tr>
-          <th style="width:70px">顺序</th>
-          <th>用户ID</th>
-          <th>积分</th>
-          <th>状态</th>
-          <th>来源</th>
-          <th>类型</th>
-          <th>熔断</th>
-          <th style="width:180px">操作</th>
-        </tr></thead><tbody>
-        ${a.accounts.length? a.accounts.map((acc, idx)=>`
-          <tr style="${acc.enabled===false?'opacity:0.45':''}">
-            <td class="mono">
-              <span style="font-weight:bold;margin-right:4px">#${idx+1}</span>
-              <button class="small" onclick="moveAccount('${esc(a.adapter)}','${esc(acc.accountId)}',-1)" ${idx===0?'disabled':''}>↑</button>
-              <button class="small" onclick="moveAccount('${esc(a.adapter)}','${esc(acc.accountId)}',1)" ${idx===a.accounts.length-1?'disabled':''}>↓</button>
-            </td>
-            <td class="mono" style="font-weight:600">${esc(acc.userId||acc.accountId)}</td>
-            <td class="mono" style="font-weight:600;cursor:pointer" title="点击可手工修改/设定积分额度" onclick="editCredit('${esc(a.adapter)}','${esc(acc.accountId)}',${acc.credits!=null?acc.credits:'null'})">
-              ${acc.credits!=null ? `<span style="color:var(--ok)">${fmt(acc.credits)}</span>` : (a.adapter==='traecn' ? '<span class="pill ok" style="font-size:11px" title="TraeCN 公测免扣积分">公测不限</span>' : '<span class="hint">-</span>')}
-            </td>
-            <td>${acc.enabled!==false?'<span class="pill ok">启用</span>':'<span class="pill dim">已禁用</span>'}</td>
-            <td class="mono" title="${esc(acc.source||'-')}" style="max-width:260px;overflow:hidden;text-overflow:ellipsis">${esc(acc.source||'-')}</td>
-            <td>${acc.discovered?'<span class="pill dim">自动发现</span>':'<span class="pill warn">手工录入</span>'}</td>
-            <td>${acc.openBreakers?`<span class="pill err">${acc.openBreakers}</span>`:'<span class="pill ok">0</span>'}</td>
-            <td>
-              <button class="small ${acc.enabled!==false?'':'primary'}" onclick="toggleAccount('${esc(a.adapter)}','${esc(acc.accountId)}',${acc.enabled===false})">
-                ${acc.enabled!==false?'禁用':'启用'}
-              </button>
-              <button class="small danger" onclick="deleteAccount('${esc(a.adapter)}','${esc(acc.accountId)}')">删除</button>
-            </td>
-          </tr>`).join('') : '<tr><td colspan="8" class="hint">未发现账号（凭据缺失或未登录对应客户端）</td></tr>'}
-        </tbody></table></div>`).join('')}
-      <div class="card"><h3>全部熔断节点</h3><div id="bk"></div></div>`;
-    renderBreakers(d.breakers||[]);
-  }catch(e){ el.innerHTML = `<div class="card" style="color:var(--err)">${esc(e.message)}</div>`; }
+    ACCOUNTS_CACHE = d;
+    renderAccountsFrame();
+  }catch(e){
+    el.innerHTML = `<div class="card" style="color:var(--err)">${esc(e.message)}</div>`;
+  }
 }
 
 async function editCredit(adapter, accountId, current){
