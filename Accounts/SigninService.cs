@@ -6,6 +6,8 @@ namespace ProxyHub;
 
 /// <summary>
 /// 签到结果：平台无关统一格式。
+/// CreditsUsed/CreditsTotal/PackCount 为 WorkBuddy get-user-resource 官方契约聚合（纯增量，查询失败或非 WB 平台为 null）；
+/// TotalCredits 语义不变 = 当前剩余可用积分（= creditsRemain）。
 /// </summary>
 public sealed record SigninResult(
     string AdapterId,
@@ -18,6 +20,9 @@ public sealed record SigninResult(
     int? TodayCredit,
     int? StreakDays,
     bool? TodayCheckedIn,
+    long? CreditsUsed = null,
+    long? CreditsTotal = null,
+    int? PackCount = null,
     string? ErrorDetail = null);
 
 /// <summary>
@@ -376,6 +381,9 @@ public sealed class SigninService
         string Name, string Uid, string AccessToken, string? RefreshToken, long? ExpiresAt,
         string? EnterpriseId, string? Domain, string Endpoint, string AuthFile);
 
+    /// <summary>WorkBuddy 积分资源汇总（get-user-resource 聚合；total_size 已按 TotalDosage 校准，total_used 已按 size-remain 补全）。</summary>
+    private sealed record WbCreditsSummary(long TotalRemain, long TotalUsed, long TotalSize, int PackCount);
+
     private static WbAccount? LoadWbCredentials(AdapterAccount account)
     {
         var file = account.SourceFile;
@@ -518,30 +526,30 @@ public sealed class SigninService
         if (wb is null) return Fail(account, "LOAD_ERROR", "凭据文件不存在或格式错误", null);
         try
         {
-            var availCreditsTask = FetchWbAvailableCreditsAsync(wb, ct);
+            var availTask = FetchWbCreditsAsync(wb, ct);
             var reply = await WbPostAsync(wb, w => WbRequest($"{w.Endpoint}/v2/billing/meter/checkin-activity-status", w), ct);
 
             if (IsSessionDeadBody(reply.StatusCode, reply.Text))
                 return Fail(account, "SESSION_DEAD", "登录态失效，需重新登录客户端（已自动禁用，可在账号页一键恢复）", WbErrorText(reply.Text));
 
-            var availCredits = await availCreditsTask;
+            var avail = await availTask;
             if (reply.StatusCode is 401 or 403)
             {
                 var refreshed = await RefreshWbTokenAsync(wb, ct);
                 if (refreshed is null)
                     return Fail(account, "NO_SESSION", $"登录态失效（HTTP {reply.StatusCode}）", null);
                 wb = refreshed;
-                availCredits = await FetchWbAvailableCreditsAsync(wb, ct); // 新 token 重新取额度
+                avail = await FetchWbCreditsAsync(wb, ct); // 新 token 重新取额度
                 reply = await WbPostAsync(wb, w => WbRequest($"{w.Endpoint}/v2/billing/meter/checkin-activity-status", w), ct);
             }
 
             if (reply.StatusCode is < 200 or >= 300)
                 return Fail(account, "ERROR", $"查询状态失败（HTTP {reply.StatusCode}）", null);
 
-            if (Dig<bool>(reply.Body, "active", "Active") == false && !availCredits.HasValue)
+            if (Dig<bool>(reply.Body, "active", "Active") == false && avail is null)
                 return new SigninResult(account.AdapterId, account.AccountId, account.Label, "workbuddy", "INACTIVE", "签到活动未开启", null, null, null, null);
 
-            return BuildWbResult(account, reply.Body, reply.StatusCode, null, null, availCredits);
+            return BuildWbResult(account, reply.Body, reply.StatusCode, null, null, avail);
         }
         catch (Exception e)
         {
@@ -561,15 +569,15 @@ public sealed class SigninService
             var statusReply = statusReplyOpt!;
             wb = refreshedWb;
 
-            var availCredits = await FetchWbAvailableCreditsAsync(wb, ct);
+            var avail = await FetchWbCreditsAsync(wb, ct);
 
             var active = Dig<bool>(statusReply.Body, "active", "Active");
-            if (active == false && !availCredits.HasValue)
+            if (active == false && avail is null)
                 return new SigninResult(account.AdapterId, account.AccountId, account.Label, "workbuddy", "INACTIVE", "签到活动未开启", null, null, null, null);
 
             var todayChecked = Dig<bool>(statusReply.Body, "today_checked_in", "todayCheckedIn");
             if (todayChecked == true)
-                return BuildWbResult(account, statusReply.Body, statusReply.StatusCode, "ALREADY", null, availCredits);
+                return BuildWbResult(account, statusReply.Body, statusReply.StatusCode, "ALREADY", null, avail);
 
             // 2. 签到
             var claim = await WbPostAsync(wb, w => WbRequest($"{w.Endpoint}/v2/billing/meter/daily-checkin", w), ct);
@@ -590,14 +598,14 @@ public sealed class SigninService
 
             // 已签到的幂等判断
             if (claim.Body is JsonObject co && (Dig<int?>(co, "code") == 10001 || Dig<string>(co, "msg", "message")?.Contains("已签") == true))
-                return BuildWbResult(account, statusReply.Body, statusReply.StatusCode, "ALREADY", null, availCredits);
+                return BuildWbResult(account, statusReply.Body, statusReply.StatusCode, "ALREADY", null, avail);
 
             if (credit is not null && claim.StatusCode is >= 200 and < 300)
             {
                 // 刷新状态与额度
-                var freshAvail = await FetchWbAvailableCreditsAsync(wb, ct);
+                var freshAvail = await FetchWbCreditsAsync(wb, ct);
                 var fresh = await WbPostAsync(wb, w => WbRequest($"{w.Endpoint}/v2/billing/meter/checkin-activity-status", w), ct);
-                return BuildWbResult(account, fresh.Body ?? statusReply.Body, claim.StatusCode, "CLAIMED", credit, freshAvail ?? availCredits);
+                return BuildWbResult(account, fresh.Body ?? statusReply.Body, claim.StatusCode, "CLAIMED", credit, freshAvail ?? avail);
             }
 
             var errMsg = Dig<string>(claim.Body, "msg", "message") ?? $"HTTP {claim.StatusCode}";
@@ -632,19 +640,25 @@ public sealed class SigninService
         return (null, reply, wb);
     }
 
-    private async Task<int?> FetchWbAvailableCreditsAsync(WbAccount wb, CancellationToken ct)
+    /// <summary>
+    /// WorkBuddy 积分资源查询（逐行对齐参考实现 fetch_user_resource / billing.go fetchUserResource 的官方契约）：
+    /// - 请求体日期为字符串 "yyyy-MM-dd HH:mm:ss"，上界固定 "2126-12-31 23:59:59"；
+    /// - 响应为 {code,msg,data} 信封，资源结构在 data.Response.Data.Accounts[]；
+    /// - 单包取值三层回退（WbPackageRemainUsed），总量经 TotalDosage 校准、used 由 size-remain 补全；
+    /// - 空套餐列表视为无数据返回 null（调用方回退签到 status 的 total_credits，对齐参考实现的 falsy 语义）。
+    /// </summary>
+    private async Task<WbCreditsSummary?> FetchWbCreditsAsync(WbAccount wb, CancellationToken ct)
     {
         try
         {
-            // 对齐官方插件 billing.go 的资源查询契约：p_tcaca 产品 + 有效期内套餐分页
             var body = new JsonObject
             {
                 ["PageNumber"] = 1,
                 ["PageSize"] = 100,
                 ["ProductCode"] = "p_tcaca",
                 ["Status"] = new JsonArray { 0, 3 },
-                ["PackageEndTimeRangeBegin"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                ["PackageEndTimeRangeEnd"] = DateTimeOffset.UtcNow.AddYears(100).ToUnixTimeSeconds(),
+                ["PackageEndTimeRangeBegin"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                ["PackageEndTimeRangeEnd"] = "2126-12-31 23:59:59",
             };
             var reply = await WbPostAsync(wb, w =>
             {
@@ -652,54 +666,107 @@ public sealed class SigninService
                 req.Content = new StringContent(body.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
                 return req;
             }, ct);
-            if (reply.StatusCode is < 200 or >= 300) return null;
-            if (reply.Body is not JsonObject root)
-            {
+            if (reply.StatusCode is < 200 or >= 300 || reply.Body is not JsonObject root)
                 return null;
-            }
 
-            // 1. 尝试直接获取顶层或 data 层的总额度/余额字段
-            var direct = Dig<int?>(root, "available_credits", "availableCredits") ?? Dig<int?>(root, "total_credits", "totalCredits") ??
-                         Dig<int?>(root, "remain_quota") ?? Dig<int?>(root, "balance");
-            if (direct.HasValue) return direct.Value;
+            // 官方 {code,msg,data} 信封：code!=0 视为业务错误（对齐参考 http_post_json）
+            if (Dig<int?>(root, "code") is { } bizCode && bizCode != 0)
+                return null;
 
-            // 2. 尝试从资源包列表累计
-            JsonArray? list = null;
-            if (root["Response"]?["Data"]?["ResourcePackageList"] is JsonArray a1) list = a1;
-            else if (root["data"]?["resource_package_list"] is JsonArray a2) list = a2;
-            else if (root["data"]?["ResourcePackageList"] is JsonArray a3) list = a3;
-            else if (root["data"]?["packages"] is JsonArray a4) list = a4;
+            // 官方嵌套结构：data.Response.Data.Accounts[]（信封 data → Response → Data → Accounts；
+            // 逐层宽容：无信封或无 Response 包装时回退上一层继续找）
+            var dataNode = root["data"] as JsonObject ?? root;
+            var respNode = dataNode["Response"] as JsonObject ?? dataNode;
+            var respData = respNode["Data"] as JsonObject;
+            if (respData?["Accounts"] is not JsonArray accounts || accounts.Count == 0)
+                return null;
 
-            if (list is not null && list.Count > 0)
+            long totalRemain = 0, totalUsed = 0, totalSize = 0;
+            foreach (var pkg in accounts)
             {
-                long total = 0;
-                foreach (var item in list)
-                    if (PackageRemain(item) is { } remain) total += remain;
-                return total > 0 ? (int?)total : null;
+                var (remain, used, size) = WbPackageRemainUsed(pkg);
+                totalRemain += remain;
+                totalUsed += used;
+                totalSize += size;
             }
-            return null;
+
+            // used 补全：总量已知时以 size-remain 推导（取较大者）
+            if (totalSize > 0)
+            {
+                var derived = Math.Max(totalSize - totalRemain, 0);
+                if (derived > totalUsed) totalUsed = derived;
+            }
+
+            // TotalDosage 校准：上游总 dosage 大于套餐包合计 size 时，以 dosage 为准并回推 used
+            var dosage = Dig<long?>(respData, "TotalDosage", "totalDosage");
+            if (dosage is > 0 && dosage > totalSize)
+            {
+                totalSize = dosage.Value;
+                var derived = totalSize - totalRemain;
+                if (derived > totalUsed) totalUsed = Math.Max(derived, 0);
+            }
+
+            return new WbCreditsSummary(totalRemain, totalUsed, totalSize, accounts.Count);
         }
         catch { return null; }
     }
 
-    /// <summary>套餐余量：优先周期指标（Cycle*，受周期容量封顶），回退生命周期指标（Capacity* / 宽容字段）。</summary>
-    private static long? PackageRemain(JsonNode? item)
+    /// <summary>
+    /// 单个套餐包的 remain/used/size 三层回退（逐行对齐参考 _package_remain_used / billing.go packageRemainUsed）：
+    /// ① CycleCapacitySize&gt;0 → 周期指标：remain 封顶于 size，used=size-remain 与显式 used 取大者并回正 remain；
+    /// ② CycleCapacityRemain/Used 任一&gt;0 → size=remain+used，CapacitySize 可抬升 size 并回正 used；
+    /// ③ 生命周期指标 CapacityRemain/Used/Size：size 缺省补齐，used==0 时由 size-remain 推导。
+    /// </summary>
+    private static (long Remain, long Used, long Size) WbPackageRemainUsed(JsonNode? pkg)
     {
-        var cycleRemain = Dig<long?>(item, "CycleCapacityRemain", "cycleCapacityRemain");
-        if (cycleRemain.HasValue)
+        long Num(string pascal, string camel) => Dig<long?>(pkg, pascal, camel) ?? 0;
+
+        // ① 周期指标（有周期容量）
+        var cycleSize = Num("CycleCapacitySize", "cycleCapacitySize");
+        if (cycleSize > 0)
         {
-            var remain = Math.Max(cycleRemain.Value, 0);
-            var cycleSize = Dig<long?>(item, "CycleCapacitySize", "cycleCapacitySize");
-            if (cycleSize is > 0 && remain > cycleSize) remain = cycleSize.Value;
-            return remain;
+            var remain = Math.Max(Num("CycleCapacityRemain", "cycleCapacityRemain"), 0);
+            if (remain > cycleSize) remain = cycleSize;
+            var used = cycleSize - remain;
+            var explicitUsed = Num("CycleCapacityUsed", "cycleCapacityUsed");
+            if (explicitUsed > used)
+            {
+                used = explicitUsed;
+                if (cycleSize >= used) remain = cycleSize - used;
+            }
+            return (remain, used, cycleSize);
         }
-        var legacy = Dig<long?>(item, "CapacityRemain", "capacity_remain", "remain", "balance");
-        return legacy.HasValue ? Math.Max(legacy.Value, 0) : null;
+
+        // ② 周期 remain/used 但无周期容量
+        var cycleRemain = Num("CycleCapacityRemain", "cycleCapacityRemain");
+        var cycleUsed = Num("CycleCapacityUsed", "cycleCapacityUsed");
+        if (cycleRemain > 0 || cycleUsed > 0)
+        {
+            var remain = Math.Max(cycleRemain, 0);
+            var used = Math.Max(cycleUsed, 0);
+            var size = remain + used;
+            var capSize = Num("CapacitySize", "capacitySize");
+            if (capSize > size)
+            {
+                size = capSize;
+                if (size >= remain) used = size - remain;
+            }
+            return (remain, used, size);
+        }
+
+        // ③ 生命周期指标
+        var lifeRemain = Math.Max(Num("CapacityRemain", "capacityRemain"), 0);
+        var lifeUsed = Math.Max(Num("CapacityUsed", "capacityUsed"), 0);
+        var lifeSize = Num("CapacitySize", "capacitySize");
+        if (lifeSize <= 0) lifeSize = lifeRemain + lifeUsed;
+        if (lifeUsed == 0 && lifeSize > lifeRemain) lifeUsed = lifeSize - lifeRemain;
+        return (lifeRemain, lifeUsed, lifeSize);
     }
 
-    private static SigninResult BuildWbResult(AdapterAccount acc, JsonNode? body, int code, string? forceResult, int? credit, int? availableCredits = null)
+    private static SigninResult BuildWbResult(AdapterAccount acc, JsonNode? body, int code, string? forceResult, int? credit, WbCreditsSummary? credits = null)
     {
-        var totalCredits = availableCredits ?? Dig<int?>(body, "total_credits", "totalCredits");
+        // 官方资源查询命中时以真实聚合为准（含真实零余额）；未命中回退签到 status 的 total_credits
+        var totalCredits = credits is not null ? (int?)credits.TotalRemain : Dig<int?>(body, "total_credits", "totalCredits");
         var streakDays = Dig<int?>(body, "streak_days", "streakDays");
         var todayChecked = Dig<bool?>(body, "today_checked_in", "todayCheckedIn");
         var todayCredit = credit ?? Dig<int?>(body, "today_credit", "todayCredit") ?? Dig<int?>(body, "daily_credit", "dailyCredit");
@@ -716,7 +783,9 @@ public sealed class SigninService
             "OK" => $"可用额度 {totalCredits}积分 · 连续{streakDays}天 · 今日{(todayChecked == true ? "已签" : "未签")}",
             _ => $"上游返回异常（HTTP {code}）",
         };
-        return new SigninResult(acc.AdapterId, acc.AccountId, acc.Label, "workbuddy", result, report, totalCredits, todayCredit, streakDays, todayChecked);
+        return new SigninResult(acc.AdapterId, acc.AccountId, acc.Label, "workbuddy", result, report,
+            totalCredits, todayCredit, streakDays, todayChecked,
+            credits?.TotalUsed, credits?.TotalSize, credits?.PackCount);
     }
 
     // ─── 通用工具 ──────────────────────────────────────────
@@ -832,5 +901,6 @@ public sealed class SigninService
     }
 
     private static SigninResult Fail(AdapterAccount acc, string result, string report, string? detail) =>
-        new(acc.AdapterId, acc.AccountId, acc.Label, PlatformOf(acc.AdapterId), result, report, null, null, null, null, detail);
+        new(acc.AdapterId, acc.AccountId, acc.Label, PlatformOf(acc.AdapterId), result, report,
+            null, null, null, null, ErrorDetail: detail);
 }

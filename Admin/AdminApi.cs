@@ -470,10 +470,13 @@ public static class AdminApi
         platform = r.Platform,
         result = r.Result,
         report = r.Report,
-        totalCredits = r.TotalCredits,
+        totalCredits = r.TotalCredits,   // 剩余可用积分（= creditsRemain，语义不变）
         todayCredit = r.TodayCredit,
         streakDays = r.StreakDays,
         todayCheckedIn = r.TodayCheckedIn,
+        creditsUsed = r.CreditsUsed,     // 已用积分（get-user-resource 聚合，经 size-remain 补全与 TotalDosage 校准）
+        creditsTotal = r.CreditsTotal,   // 总量（含 TotalDosage 校准）
+        packCount = r.PackCount,         // 套餐包数量
         errorDetail = r.ErrorDetail,
         signinSupported = SigninService.SigninAdapters.Contains(r.AdapterId, StringComparer.OrdinalIgnoreCase),
     };
