@@ -6,69 +6,109 @@
 <title>ProxyHub 控制台</title>
 <style>
 :root{
-  --bg:#0d1117;--bg2:#161b22;--bg3:#1c2330;--line:#2d333b;
-  --fg:#e6edf3;--dim:#8b949e;--dim2:#6e7681;
-  --acc:#4f8cc9;--ok:#3fb950;--warn:#d29922;--err:#f85149;
-  --mono:ui-monospace,'Cascadia Code',Consolas,'Courier New',monospace;
+  --bg:#090d16;--bg2:#111827;--bg3:#1a2333;--line:#263346;
+  --fg:#f1f5f9;--dim:#94a3b8;--dim2:#64748b;
+  --acc:#3b82f6;--acc-hover:#60a5fa;--acc-bg:rgba(59,130,246,0.12);
+  --ok:#10b981;--ok-bg:rgba(16,185,129,0.12);
+  --warn:#f59e0b;--warn-bg:rgba(245,158,11,0.12);
+  --err:#ef4444;--err-bg:rgba(239,68,68,0.12);
+  --mono:ui-monospace,'Cascadia Code','SFMono-Regular',Consolas,monospace;
+  --card-shadow:0 1px 3px rgba(0,0,0,0.25);
+  --border-radius:6px;
+}
+[data-theme="light"]{
+  --bg:#f8fafc;--bg2:#ffffff;--bg3:#f1f5f9;--line:#e2e8f0;
+  --fg:#0f172a;--dim:#64748b;--dim2:#94a3b8;
+  --acc:#2563eb;--acc-hover:#1d4ed8;--acc-bg:rgba(37,99,235,0.08);
+  --ok:#059669;--ok-bg:rgba(5,150,105,0.08);
+  --warn:#d97706;--warn-bg:rgba(217,119,6,0.08);
+  --err:#dc2626;--err-bg:rgba(220,38,38,0.08);
+  --card-shadow:0 1px 3px rgba(0,0,0,0.05);
+}
+[data-theme="steel"]{
+  --bg:#14171f;--bg2:#1d222d;--bg3:#272d3c;--line:#353e50;
+  --fg:#e6edf3;--dim:#8b949e;--dim2:#656d76;
+  --acc:#58a6ff;--acc-hover:#79b8ff;--acc-bg:rgba(88,166,255,0.12);
+  --ok:#3fb950;--ok-bg:rgba(63,185,80,0.12);
+  --warn:#d29922;--warn-bg:rgba(210,153,34,0.12);
+  --err:#f85149;--err-bg:rgba(248,81,73,0.12);
+  --card-shadow:0 1px 3px rgba(0,0,0,0.35);
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,'Segoe UI','Microsoft YaHei',sans-serif}
+body{background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;transition:background .2s ease,color .2s ease}
 a{color:var(--acc);text-decoration:none}
-.wrap{max-width:1080px;margin:0 auto;padding:20px}
-header{display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap}
-header h1{font-size:19px;font-weight:600}
-header .sub{color:var(--dim);font-size:12px}
+.wrap{max-width:1120px;margin:0 auto;padding:22px 18px}
+header{display:flex;align-items:center;gap:14px;margin-bottom:20px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:16px}
+header .brand{display:flex;align-items:center;gap:8px}
+header h1{font-size:18px;font-weight:700;letter-spacing:-0.3px;display:flex;align-items:center;gap:8px}
+.pulse-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(16,185,129,0.7);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(16,185,129,0.7)}70%{box-shadow:0 0 0 6px rgba(16,185,129,0)}100%{box-shadow:0 0 0 0 rgba(16,185,129,0)}}
+.badge-ver{font-size:10px;font-weight:700;font-family:var(--mono);padding:1px 6px;border-radius:4px;background:var(--acc-bg);color:var(--acc);border:1px solid var(--acc)}
+header .sub{color:var(--dim);font-size:12px;padding:2px 8px;background:var(--bg3);border-radius:4px;border:1px solid var(--line)}
 header .spacer{flex:1}
-button{background:var(--bg3);border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px}
-button:hover{border-color:var(--acc)}
-button.primary{background:#2b4a6e;border-color:var(--acc)}
-button.danger{border-color:var(--err);color:var(--err)}
-button.small{padding:2px 10px;font-size:12px}
-input,select,textarea{background:var(--bg2);border:1px solid var(--line);color:var(--fg);border-radius:6px;padding:6px 10px;font-size:13px;font-family:inherit}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc)}
-.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:18px;flex-wrap:wrap}
-.tab{padding:8px 16px;cursor:pointer;color:var(--dim);border-bottom:2px solid transparent;font-size:13px}
+button{background:var(--bg3);border:1px solid var(--line);color:var(--fg);border-radius:var(--border-radius);padding:6px 14px;cursor:pointer;font-size:13px;font-weight:500;transition:all .15s ease}
+button:hover{border-color:var(--acc);color:var(--acc-hover)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button.primary:hover{background:var(--acc-hover);border-color:var(--acc-hover);color:#fff}
+button.danger{border-color:var(--err);color:var(--err);background:transparent}
+button.danger:hover{background:var(--err);color:#fff}
+button.small{padding:3px 10px;font-size:12px}
+button:disabled{opacity:0.5;cursor:not-allowed}
+input,select,textarea{background:var(--bg2);border:1px solid var(--line);color:var(--fg);border-radius:var(--border-radius);padding:6px 10px;font-size:13px;font-family:inherit;transition:border-color .15s ease}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.theme-select{background:var(--bg3);border:1px solid var(--line);color:var(--fg);border-radius:var(--border-radius);padding:4px 8px;font-size:12px;cursor:pointer}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px;flex-wrap:wrap}
+.tab{padding:8px 16px;cursor:pointer;color:var(--dim);border-bottom:2px solid transparent;font-size:13px;font-weight:500;transition:all .15s ease}
 .tab:hover{color:var(--fg)}
-.tab.active{color:var(--fg);border-bottom-color:var(--acc)}
-.card{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:14px}
-.card h3{font-size:13px;color:var(--dim);font-weight:600;margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px}
+.tab.active{color:var(--acc);border-bottom-color:var(--acc);font-weight:600}
+.card{background:var(--bg2);border:1px solid var(--line);border-radius:var(--border-radius);padding:16px;margin-bottom:14px;box-shadow:var(--card-shadow)}
+.card h3{font-size:12px;color:var(--dim);font-weight:600;margin-bottom:12px;text-transform:uppercase;letter-spacing:.6px}
 .grid{display:grid;gap:12px}
-.grid.c4{grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}
-.stat .v{font-size:24px;font-weight:700;font-family:var(--mono)}
+.grid.c4{grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}
+.grid.c3{grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+.stat{display:flex;flex-direction:column;justify-content:space-between}
+.stat .v{font-size:26px;font-weight:700;font-family:var(--mono);line-height:1.2;margin-bottom:4px}
 .stat .k{color:var(--dim);font-size:12px}
 .stat.ok .v{color:var(--ok)} .stat.err .v{color:var(--err)} .stat.warn .v{color:var(--warn)}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{color:var(--dim);text-align:left;font-weight:500;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
-td{padding:6px 8px;border-bottom:1px solid #21262d;vertical-align:top}
-tr:hover td{background:#1a2029}
+th{color:var(--dim);text-align:left;font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap;font-size:12px;letter-spacing:0.3px}
+td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:hover td{background:var(--bg3)}
 .mono{font-family:var(--mono);font-size:12px}
-.pill{display:inline-block;padding:1px 9px;border-radius:10px;font-size:11px;border:1px solid var(--line)}
-.pill.ok{color:var(--ok);border-color:var(--ok)} .pill.err{color:var(--err);border-color:var(--err)}
-.pill.warn{color:var(--warn);border-color:var(--warn)} .pill.dim{color:var(--dim)}
+.pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500;border:1px solid var(--line);white-space:nowrap}
+.pill.ok{color:var(--ok);border-color:var(--ok);background:var(--ok-bg)}
+.pill.err{color:var(--err);border-color:var(--err);background:var(--err-bg)}
+.pill.warn{color:var(--warn);border-color:var(--warn);background:var(--warn-bg)}
+.pill.dim{color:var(--dim);background:var(--bg3)}
+.pill.acc{color:var(--acc);border-color:var(--acc);background:var(--acc-bg)}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
 label{color:var(--dim);font-size:12px}
 .hint{color:var(--dim2);font-size:12px}
-#keybar{position:fixed;inset:0;background:rgba(13,17,23,.96);display:flex;align-items:center;justify-content:center;z-index:99}
-#keybar .box{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:28px;width:360px}
+#keybar{position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:99}
+#keybar .box{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:28px;width:380px;box-shadow:0 8px 30px rgba(0,0,0,0.5)}
 #keybar h2{font-size:16px;margin-bottom:6px}
 #keybar p{color:var(--dim);font-size:12px;margin-bottom:14px}
 #keybar input{width:100%;margin-bottom:12px}
-canvas{width:100%;height:160px;background:var(--bg3);border-radius:6px}
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:50}
-.modal .box{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:22px;width:520px;max-height:86vh;overflow:auto}
+canvas{width:100%;height:160px;background:var(--bg3);border-radius:var(--border-radius)}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;z-index:50}
+.modal .box{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:22px;width:540px;max-height:86vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,0.5)}
 .modal h2{font-size:15px;margin-bottom:14px}
 .field{margin-bottom:12px}
 .field label{display:block;margin-bottom:4px}
 .field input,.field select{width:100%}
 .field input[type="checkbox"]{width:auto;display:inline-block;vertical-align:middle;margin-right:6px}
-.preview{background:var(--bg);border:1px dashed var(--line);border-radius:6px;padding:10px;font-family:var(--mono);font-size:12px;color:var(--dim);max-height:180px;overflow:auto;margin-top:6px}
-.toast{position:fixed;bottom:20px;right:20px;background:var(--bg3);border:1px solid var(--ok);color:var(--ok);padding:8px 16px;border-radius:6px;font-size:13px;z-index:98;animation:fade 3s forwards}
+.preview{background:var(--bg);border:1px dashed var(--line);border-radius:var(--border-radius);padding:10px;font-family:var(--mono);font-size:12px;color:var(--dim);max-height:180px;overflow:auto;margin-top:6px}
+.toast{position:fixed;bottom:20px;right:20px;background:var(--bg2);border:1px solid var(--ok);color:var(--ok);padding:8px 16px;border-radius:var(--border-radius);font-size:13px;z-index:98;box-shadow:0 4px 12px rgba(0,0,0,0.2);animation:fade 3s forwards}
 .toast.err{border-color:var(--err);color:var(--err)}
-@keyframes fade{0%{opacity:0}10%{opacity:1}80%{opacity:1}100%{opacity:0}}
+@keyframes fade{0%{opacity:0;transform:translateY(10px)}10%{opacity:1;transform:translateY(0)}80%{opacity:1}100%{opacity:0;transform:translateY(10px)}}
 .hidden{display:none!important}
 code{background:var(--bg3);border-radius:4px;padding:1px 6px;font-family:var(--mono);font-size:12px}
-pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:12px;font-family:var(--mono);font-size:12px;overflow:auto;max-height:420px}
+pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--border-radius);padding:12px;font-family:var(--mono);font-size:12px;overflow:auto;max-height:420px}
 .form2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+/* 进度条与指标小部件 */
+.bar-track{width:100%;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;display:flex}
+.bar-fill{height:100%;transition:width .3s ease}
+.route-item{background:var(--bg3);border:1px solid var(--line);border-radius:6px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
 </style>
 </head>
 <body>
@@ -84,10 +124,22 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:
 
 <div class="wrap">
   <header>
-    <h1>ProxyHub 控制台</h1>
+    <div class="brand">
+      <div class="pulse-dot"></div>
+      <h1>ProxyHub</h1>
+      <span class="badge-ver">NET 10.0</span>
+    </div>
     <span class="sub mono" id="endpoint"></span>
     <span class="spacer"></span>
-    <button class="small" onclick="logout()">退出</button>
+    <div style="display:flex;align-items:center;gap:8px">
+      <select id="themeSelector" class="theme-select" onchange="switchTheme(this.value)">
+        <option value="dark">🌙 深色</option>
+        <option value="steel">⚙️ 工业灰</option>
+        <option value="light">☀️ 浅色</option>
+        <option value="system">🖥️ 跟随系统</option>
+      </select>
+      <button class="small" onclick="logout()">退出</button>
+    </div>
   </header>
 
   <div class="tabs" id="tabs"></div>
@@ -124,45 +176,259 @@ function showKeybar(){ document.getElementById('keybar').classList.remove('hidde
 document.getElementById('endpoint').textContent = location.origin;
 document.getElementById('keyinput').addEventListener('keydown',e=>{ if(e.key==='Enter') saveKey(); });
 
-/* ─────────── Tabs ─────────── */
-function renderTabs(){
-  document.getElementById('tabs').innerHTML = TABS.map(([id,name])=>
-    `<div class="tab ${TAB===id?'active':''}" onclick="go('${id}')">${name}</div>`).join('');
+// 主题系统
+function getSystemTheme(){ return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; }
+function applyTheme(t){
+  const real = t === 'system' ? getSystemTheme() : t;
+  document.documentElement.setAttribute('data-theme', real);
+  const sel = document.getElementById('themeSelector');
+  if(sel) sel.value = t;
 }
-function go(tab){ TAB=tab; renderTabs(); render(); }
+function switchTheme(t){
+  localStorage.setItem('ph_theme', t);
+  applyTheme(t);
+  if(TAB === 'overview') renderOverview(); // 重新绘制图表以适应新主题
+}
+const savedTheme = localStorage.getItem('ph_theme') || 'dark';
+applyTheme(savedTheme);
+if(window.matchMedia){
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', ()=>{
+    if(localStorage.getItem('ph_theme') === 'system') applyTheme('system');
+  });
+}
 
 /* ─────────── Overview ─────────── */
 async function renderOverview(){
   const el = document.getElementById('content');
   el.innerHTML = '<div class="card hint">加载中…</div>';
   try{
-    const d = await api('/admin/api/overview');
+    const [d, grpData, activeRoutesRes] = await Promise.all([
+      api('/admin/api/overview'),
+      api('/admin/api/groups').catch(()=>({ groups: [] })),
+      api('/admin/api/groups/active-routes').catch(()=>null)
+    ]);
     const days = d.usage?.byDay || [];
     const today = days.length ? days[days.length-1] : {requests:0,tokens:0};
     const totalReq = days.reduce((s,x)=>s+x.requests,0);
+    const totalTokens = days.reduce((s,x)=>s+(x.tokens||0),0);
     const open = (d.breakers||[]).filter(b=>b.state==='open').length;
+    const byAdapter = d.usage?.byAdapter || {};
+    const groups = grpData.groups || [];
+
+    // 汇总模型排行榜
+    const modelStats = {};
+    let grandPrompt = 0, grandCompletion = 0;
+    for(const [adId, ad] of Object.entries(byAdapter)){
+      grandPrompt += (ad.promptTokens || 0);
+      grandCompletion += (ad.completionTokens || 0);
+      if(ad.models){
+        for(const [mName, mVal] of Object.entries(ad.models)){
+          if(!modelStats[mName]) modelStats[mName] = { requests: 0, tokens: 0, adapters: new Set() };
+          modelStats[mName].requests += (mVal.requests || 0);
+          modelStats[mName].tokens += (mVal.tokens || 0);
+          modelStats[mName].adapters.add(adId);
+        }
+      }
+    }
+    const sortedModels = Object.entries(modelStats).sort((a,b)=>b[1].tokens - a[1].tokens);
+
+    // 自动模型路由计算（优先用后端 active-routes 接口，若暂无则从 preview/breakers 实时推导）
+    const breakerMap = new Map((d.breakers||[]).map(b => [b.key, b]));
+    let activeRoutes = [];
+    if(activeRoutesRes && activeRoutesRes.routes){
+      activeRoutes = activeRoutesRes.routes;
+    } else {
+      // 本地智能推导
+      activeRoutes = groups.map(g => {
+        const preview = g.preview || [];
+        let chosen = null;
+        let isFallback = false;
+        for(let i=0; i<preview.length; i++){
+          const p = preview[i];
+          // label 格式: "adapter [account] model" 或 "adapter model"
+          const match = p.match(/^([^\s\[]+)(?:\s+\[([^\]]+)\])?\s+(.+)$/);
+          if(match){
+            const [, ad, acc, mdl] = match;
+            const key = acc ? `${ad}|${acc}|${mdl}` : `${ad}|${mdl}`;
+            const b = breakerMap.get(key);
+            const isBroken = b && (b.state === 'open' || b.state === 'half-open');
+            if(!isBroken){
+              chosen = { adapter: ad, account: acc || '默认', model: mdl, breaker: 'closed', fallback: i > 0 };
+              break;
+            }
+          }
+        }
+        if(!chosen && preview.length > 0){
+          const match = preview[0].match(/^([^\s\[]+)(?:\s+\[([^\]]+)\])?\s+(.+)$/);
+          if(match){
+            chosen = { adapter: match[1], account: match[2] || '默认', model: match[3], breaker: 'open', fallback: true };
+          }
+        }
+        return { group: g.name, route: chosen, candidates: g.candidates, total: preview.length };
+      });
+    }
+
     el.innerHTML = `
       <div class="grid c4">
-        <div class="card stat ok"><div class="v">${d.adapters.filter(a=>a.ready).length}/${d.adapters.length}</div><div class="k">适配器就绪</div></div>
-        <div class="card stat"><div class="v">${today.requests||0}</div><div class="k">今日请求</div></div>
-        <div class="card stat"><div class="v">${fmt((today.tokens||0))}</div><div class="k">今日 tokens</div></div>
-        <div class="card stat ${open?'err':''}"><div class="v">${open}</div><div class="k">熔断中节点</div></div>
+        <div class="card stat ok">
+          <div class="v">${d.adapters.filter(a=>a.ready).length} / ${d.adapters.length}</div>
+          <div class="k">适配器在线状态</div>
+        </div>
+        <div class="card stat">
+          <div class="v">${fmt(today.requests||0)}</div>
+          <div class="k">今日请求数（累计 ${fmt(totalReq)}）</div>
+        </div>
+        <div class="card stat">
+          <div class="v">${fmt(today.tokens||0)}</div>
+          <div class="k">今日 Tokens（累计 ${fmt(totalTokens)}）</div>
+        </div>
+        <div class="card stat ${open?'err':''}">
+          <div class="v">${open}</div>
+          <div class="k">熔断隔离节点</div>
+        </div>
       </div>
-      <div class="card"><h3>每日用量趋势（累计 ${fmt(totalReq)} 次请求）</h3><canvas id="chart"></canvas></div>
-      <div class="card"><h3>适配器</h3><table><thead><tr><th>平台</th><th>就绪</th><th>账号</th><th>模型</th><th>说明</th></tr></thead><tbody>
-        ${d.adapters.map(a=>`<tr><td class="mono">${a.id}</td>
-          <td>${a.ready?'<span class="pill ok">ready</span>':'<span class="pill err">down</span>'}</td>
-          <td>${a.accounts}</td><td>${a.models}</td><td class="hint">${a.error||'-'}</td></tr>`).join('')}
-      </tbody></table></div>
-      <div class="card"><h3>熔断节点</h3><div id="bk"></div></div>`;
+
+      <!-- ⚡ 自动模型实时调度路由看板 -->
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin-bottom:0">⚡ 自动模型实时调度监控 (Auto-Routing Status)</h3>
+          <span class="hint">客户端请求自动分组时，系统首选路由的平台、账号及真实上游模型</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px">
+          ${activeRoutes.map(item => {
+            const r = item.route;
+            const isOk = r && r.breaker !== 'open';
+            const statusClass = !r ? 'err' : (r.fallback ? 'warn' : 'ok');
+            const statusText = !r ? '无可用节点' : (r.fallback ? (r.breaker === 'open' ? '全熔断' : '降级切换中') : '正常直通');
+            return `
+              <div class="route-item">
+                <div>
+                  <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+                    <span class="mono" style="font-weight:700;font-size:14px">${esc(item.group)}</span>
+                    <span class="pill ${statusClass}" style="font-size:10px">${statusText}</span>
+                  </div>
+                  <div class="hint" style="font-size:12px;margin-bottom:2px">
+                    目标平台: <span class="mono" style="color:var(--fg);font-weight:600">${esc(r?.adapter||'-')}</span>
+                    ${r?.account ? ` · 账号: <span class="mono" style="color:var(--acc)">${esc(r.account)}</span>` : ''}
+                  </div>
+                  <div class="hint" style="font-size:12px">
+                    上游模型: <span class="mono" style="color:var(--fg)">${esc(r?.model||'-')}</span>
+                  </div>
+                </div>
+                <div style="text-align:right">
+                  <div class="mono hint" style="font-size:11px">${item.candidates||0} 节点备选</div>
+                  <div style="margin-top:6px">
+                    <span class="pill ${isOk?'ok':'err'}" style="font-size:10px">${isOk?'● 生效中':'● 避让中'}</span>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+
+      <!-- 📊 Token 平台与模型多维度分析 -->
+      <div class="grid c3" style="margin-bottom:14px">
+        <div class="card" style="grid-column: span 2">
+          <h3>平台用量与 Token 占比</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>平台</th>
+                <th>请求数</th>
+                <th>输入 Tokens</th>
+                <th>输出 Tokens</th>
+                <th>总 Tokens</th>
+                <th style="width:140px">用量占比</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${Object.entries(byAdapter).map(([ad, st]) => {
+                const tokens = (st.promptTokens||0) + (st.completionTokens||0);
+                const pct = totalTokens > 0 ? ((tokens / totalTokens) * 100).toFixed(1) : '0';
+                return `
+                  <tr>
+                    <td class="mono" style="font-weight:600">${esc(ad)}</td>
+                    <td class="mono">${fmt(st.requests||0)}</td>
+                    <td class="mono hint">${fmt(st.promptTokens||0)}</td>
+                    <td class="mono hint">${fmt(st.completionTokens||0)}</td>
+                    <td class="mono" style="font-weight:600;color:var(--acc)">${fmt(tokens)}</td>
+                    <td>
+                      <div style="display:flex;align-items:center;gap:8px">
+                        <div class="bar-track" style="flex:1"><div class="bar-fill" style="width:${pct}%;background:var(--acc)"></div></div>
+                        <span class="mono hint" style="font-size:11px;width:38px">${pct}%</span>
+                      </div>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+              ${!Object.keys(byAdapter).length ? '<tr><td colspan="6" class="hint">暂无平台用量数据</td></tr>' : ''}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>模型用量排行 TOP</h3>
+          <div style="max-height:220px;overflow-y:auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th>请求</th>
+                  <th>Tokens</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${sortedModels.slice(0, 10).map(([mName, st]) => `
+                  <tr>
+                    <td class="mono" style="font-size:12px;font-weight:500">${esc(mName)}</td>
+                    <td class="mono hint">${st.requests}</td>
+                    <td class="mono" style="color:var(--ok);font-weight:600">${fmt(st.tokens)}</td>
+                  </tr>
+                `).join('')}
+                ${!sortedModels.length ? '<tr><td colspan="3" class="hint">暂无模型统计</td></tr>' : ''}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <h3 style="margin-bottom:0">每日请求与 Token 趋势</h3>
+          <span class="hint">近 14 天用量曲线</span>
+        </div>
+        <canvas id="chart"></canvas>
+      </div>
+
+      <div class="card">
+        <h3>适配器健康状态</h3>
+        <table>
+          <thead>
+            <tr><th>平台</th><th>状态</th><th>账号数</th><th>可用模型</th><th>异常诊断</th></tr>
+          </thead>
+          <tbody>
+            ${d.adapters.map(a=>`<tr>
+              <td class="mono" style="font-weight:600">${a.id}</td>
+              <td>${a.ready?'<span class="pill ok">● ready</span>':'<span class="pill err">● down</span>'}</td>
+              <td><span class="mono">${a.accounts}</span></td>
+              <td><span class="mono">${a.models}</span></td>
+              <td class="hint">${esc(a.error||'-')}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card"><h3>熔断隔离节点</h3><div id="bk"></div></div>`;
+
     drawChart(days);
     renderBreakers(d.breakers||[]);
   }catch(e){ el.innerHTML = `<div class="card" style="color:var(--err)">${esc(e.message)}</div>`; }
 }
 function renderBreakers(list){
   const el = document.getElementById('bk');
-  if(!list.length){ el.innerHTML='<div class="hint">无熔断记录（一切正常）</div>'; return; }
-  el.innerHTML = `<table><thead><tr><th>节点</th><th>状态</th><th>连续失败</th><th>最近错误</th><th></th></tr></thead><tbody>
+  if(!list.length){ el.innerHTML='<div class="hint">无熔断记录（全部节点健康运行）</div>'; return; }
+  el.innerHTML = `<table><thead><tr><th>节点标识</th><th>当前状态</th><th>连续失败</th><th>最近错误信息</th><th>操作</th></tr></thead><tbody>
     ${list.map(b=>`<tr><td class="mono">${esc(b.key)}</td>
       <td><span class="pill ${b.state==='closed'?'ok':b.state==='open'?'err':'warn'}">${b.state}</span></td>
       <td>${b.consecutiveFailures}/${b.failureThreshold}</td>
@@ -178,21 +444,29 @@ function drawChart(days){
   const dpr = window.devicePixelRatio||1;
   c.width = c.offsetWidth*dpr; c.height = 160*dpr;
   const g = c.getContext('2d'); g.scale(dpr,dpr);
-  const W=c.offsetWidth, H=160, pad=30;
-  g.fillStyle='#1c2330'; g.fillRect(0,0,W,H);
+  const W=c.offsetWidth, H=160, pad=35;
+
+  const style = getComputedStyle(document.documentElement);
+  const bg3 = style.getPropertyValue('--bg3').trim() || '#1a2333';
+  const line = style.getPropertyValue('--line').trim() || '#263346';
+  const acc = style.getPropertyValue('--acc').trim() || '#3b82f6';
+  const dim = style.getPropertyValue('--dim').trim() || '#94a3b8';
+
+  g.fillStyle=bg3; g.fillRect(0,0,W,H);
   const data = days.slice(-14);
   const max = Math.max(1,...data.map(x=>x.requests));
-  g.strokeStyle='#2d333b';
+  g.strokeStyle=line;
+  g.lineWidth = 1;
   for(let i=0;i<=4;i++){ const y=10+(H-40)*i/4; g.beginPath(); g.moveTo(pad,y); g.lineTo(W-8,y); g.stroke(); }
   if(data.length){
     const step=(W-pad-12)/Math.max(1,data.length-1);
-    g.beginPath(); g.strokeStyle='#4f8cc9'; g.lineWidth=2;
+    g.beginPath(); g.strokeStyle=acc; g.lineWidth=2.5;
     data.forEach((d,i)=>{ const x=pad+i*step, y=10+(H-40)*(1-d.requests/max); i?g.lineTo(x,y):g.moveTo(x,y); });
     g.stroke();
-    g.fillStyle='#8b949e'; g.font='10px monospace';
+    g.fillStyle=dim; g.font='10px monospace';
     data.forEach((d,i)=>{ if(i%Math.ceil(data.length/7)===0) g.fillText(d.date.slice(5), pad+i*step-12, H-6); });
-    g.fillStyle='#4f8cc9'; g.fillText('峰值 '+max, W-70, 14);
-  } else { g.fillStyle='#6e7681'; g.font='12px sans-serif'; g.fillText('暂无用量数据', W/2-40, H/2); }
+    g.fillStyle=acc; g.font='11px monospace'; g.fillText('峰值 '+max+' 次', W-80, 14);
+  } else { g.fillStyle=dim; g.font='12px sans-serif'; g.fillText('暂无用量数据', W/2-40, H/2); }
 }
 
 /* ─────────── Models matrix ─────────── */
