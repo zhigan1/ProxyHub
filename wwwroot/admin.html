@@ -1193,7 +1193,9 @@ let signinData = null;
 function fmtLastRun(ts){
   if(!ts) return '从未';
   const sec = Math.max(0, Math.round((Date.now() - ts)/1000));
-  return sec + ' 秒前';
+  if(sec < 60) return sec + ' 秒前';
+  if(sec < 3600) return Math.floor(sec/60) + ' 分钟前';
+  return Math.floor(sec/3600) + ' 小时前';
 }
 
 function updateSigninButtons(){
@@ -1206,8 +1208,21 @@ function updateSigninButtons(){
   }
   if(refreshBtn){
     refreshBtn.disabled = signinLoading;
-    refreshBtn.textContent = signinLoading ? '刷新中…' : '刷新状态';
+    refreshBtn.textContent = signinLoading ? '刷新中…' : '刷新状态与额度';
   }
+  if(lastRunEl){
+    lastRunEl.textContent = '上次运行：' + fmtLastRun(signinLastRun);
+  }
+}
+
+function updateSigninHeader(){
+  const autoEl = document.getElementById('signin_auto_status');
+  if(autoEl && signinData){
+    const autoOn = signinData.autoSigninEnabled !== false;
+    autoEl.className = `pill ${autoOn ? 'ok' : 'dim'}`;
+    autoEl.textContent = autoOn ? '已启用（启动及周期巡检）' : '已停用';
+  }
+  const lastRunEl = document.getElementById('signin_last_run');
   if(lastRunEl){
     lastRunEl.textContent = '上次运行：' + fmtLastRun(signinLastRun);
   }
@@ -1219,7 +1234,9 @@ async function fetchSigninStatus(quiet = false){
   try{
     const d = await api('/admin/api/signin/status');
     signinData = d;
+    if(d && d.lastRun != null) signinLastRun = d.lastRun;
     renderSigninContent();
+    updateSigninHeader();
     if(!quiet) toast('签到状态已刷新');
   }catch(e){
     toast(e.message || '获取签到状态失败', true);
@@ -1236,9 +1253,10 @@ async function runAllSignin(){
   updateSigninButtons();
   try{
     const d = await api('/admin/api/signin/run', { method: 'POST' });
-    signinLastRun = Date.now();
     signinData = d;
+    signinLastRun = (d && d.lastRun != null) ? d.lastRun : Date.now();
     renderSigninContent();
+    updateSigninHeader();
     toast('签到执行完成');
   }catch(e){
     toast(e.message || '签到执行失败', true);
@@ -1266,7 +1284,7 @@ function renderSigninContent(errMsg){
       <thead>
         <tr>
           <th>平台</th>
-          <th>账号标签</th>
+          <th>账号标签 / ID</th>
           <th>今日状态</th>
           <th>可用额度 / 积分</th>
           <th>今日额度</th>
@@ -1276,40 +1294,81 @@ function renderSigninContent(errMsg){
       </thead>
       <tbody>
         ${accounts.map(acc => {
-          const isTrae = (acc.platform || acc.adapterId || '').toLowerCase().includes('trae');
-          const platBadge = isTrae
-            ? '<span class="pill acc">trae</span>'
-            : '<span class="pill warn">workbuddy</span>';
+          const plat = (acc.platform || acc.adapterId || '').toLowerCase();
+          let platBadge = `<span class="pill dim">${esc(plat || '未知')}</span>`;
+          if(plat.includes('trae')){
+            platBadge = '<span class="pill acc">trae</span>';
+          } else if(plat.includes('codebuddy') || plat.includes('workbuddy')){
+            platBadge = '<span class="pill warn">workbuddy</span>';
+          } else if(plat.includes('qoder')){
+            platBadge = '<span class="pill dim">qoder</span>';
+          }
 
           let statusBadge = '<span class="pill dim">— 未知</span>';
-          if(acc.result === 'NO_SESSION'){
+          let detailHtml = `<span class="hint">${esc(acc.report || acc.errorDetail || '—')}</span>`;
+
+          const isCongestion = (acc.errorDetail && acc.errorDetail.includes('上游拥塞')) ||
+                               (acc.report && acc.report.includes('上游拥塞'));
+
+          if(acc.signinSupported === false || acc.result === 'UNSUPPORTED'){
+            statusBadge = '<span class="pill dim">不支持签到</span>';
+            detailHtml = `<span class="hint">${esc(acc.report || '该平台暂无签到/积分查询能力')}</span>`;
+          } else if(acc.result === 'SESSION_DEAD'){
+            statusBadge = '<span class="pill err">⚠️ 登录态失效</span>';
+            detailHtml = `<div style="color:var(--err);font-weight:500">登录态失效，需重新登录客户端</div><div class="hint" style="margin-top:2px">账号已自动禁用，可在<a href="javascript:go('accounts')" style="color:var(--acc);text-decoration:underline">账号页</a>一键恢复</div>`;
+          } else if(acc.result === 'SKIPPED'){
+            statusBadge = '<span class="pill warn">本轮跳过（上游拥塞）</span>';
+            detailHtml = `<span class="hint">${esc(acc.report || '上游连续拥塞，本轮提前结束，本账号未尝试')}</span>`;
+          } else if(acc.result === 'ERROR' || acc.result === 'LOAD_ERROR' || isCongestion){
+            if(isCongestion){
+              statusBadge = '<span class="pill warn">⚠️ 上游拥塞</span>';
+              detailHtml = `<span style="color:var(--warn)">${esc(acc.report || acc.errorDetail || '上游服务繁忙，签到未成功')}</span>`;
+            } else {
+              statusBadge = '<span class="pill err">❌ 异常</span>';
+              detailHtml = `<span style="color:var(--err)">${esc(acc.report || acc.errorDetail || '签到或查询异常')}</span>`;
+            }
+          } else if(acc.result === 'NO_SESSION'){
             statusBadge = '<span class="pill err">⚠️ 登录失效</span>';
+            detailHtml = `<span style="color:var(--err)">${esc(acc.report || acc.errorDetail || '未找到有效登录态')}</span>`;
           } else if(acc.result === 'INACTIVE'){
             statusBadge = '<span class="pill dim">⚠️ 未开启</span>';
-          } else if(acc.result === 'LOAD_ERROR' || acc.result === 'ERROR'){
-            statusBadge = '<span class="pill err">❌ 异常</span>';
+            detailHtml = `<span class="hint">${esc(acc.report || '账号已停用')}</span>`;
           } else if(acc.todayCheckedIn === true || acc.result === 'CLAIMED' || acc.result === 'ALREADY'){
             statusBadge = '<span class="pill ok">✅ 已签到</span>';
           } else if(acc.todayCheckedIn === false){
             statusBadge = '<span class="pill warn">❌ 未签</span>';
+          } else {
+            statusBadge = '<span class="pill dim">— 未知</span>';
           }
 
           const label = acc.label || acc.accountLabel || acc.name || '-';
-          const credits = (acc.totalCredits != null && acc.totalCredits !== '') ? fmt(acc.totalCredits) : '-';
-          const todayInc = (acc.todayCredit != null && acc.todayCredit !== '')
-            ? `<span style="color:var(--ok);font-weight:600">+${acc.todayCredit}</span>`
-            : (acc.todayCheckedIn === true ? '<span class="hint">已获取</span>' : '-');
-          const streak = (acc.streakDays != null && acc.streakDays !== '') ? (acc.streakDays + ' 天') : '-';
-          const report = acc.report || acc.errorDetail || '-';
+          const credits = (acc.totalCredits != null && acc.totalCredits !== '') ? fmt(acc.totalCredits) : '—';
+
+          let todayInc = '—';
+          if(acc.todayCredit != null && acc.todayCredit !== ''){
+            const num = Number(acc.todayCredit);
+            if(!isNaN(num) && num > 0){
+              todayInc = `<span style="color:var(--ok);font-weight:600">+${num}</span>`;
+            } else if(!isNaN(num)){
+              todayInc = `<span class="mono">${num}</span>`;
+            } else {
+              todayInc = `<span class="mono">${esc(acc.todayCredit)}</span>`;
+            }
+          }
+
+          const streak = (acc.streakDays != null && acc.streakDays !== '') ? (acc.streakDays + ' 天') : '—';
 
           return `<tr>
             <td>${platBadge}</td>
-            <td class="mono">${esc(label)}</td>
+            <td>
+              <div style="font-weight:500">${esc(label)}</div>
+              <div class="hint mono" style="font-size:11px">${esc(acc.accountId || '—')}</div>
+            </td>
             <td>${statusBadge}</td>
             <td class="mono" style="font-weight:600">${credits}</td>
             <td class="mono">${todayInc}</td>
             <td class="mono">${streak}</td>
-            <td class="hint">${esc(report)}</td>
+            <td>${detailHtml}</td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -1329,7 +1388,7 @@ async function renderSignin(){
           <span id="signin_last_run" class="hint" style="margin-left:12px">上次运行：${fmtLastRun(signinLastRun)}</span>
         </div>
         <div style="font-size:12px;color:var(--dim)">
-          后台自动签到：<span class="pill ${autoOn?'ok':'dim'}">${autoOn?'已启用（启动及周期巡检）':'已停用'}</span>
+          后台自动签到：<span id="signin_auto_status" class="pill ${autoOn?'ok':'dim'}">${autoOn?'已启用（启动及周期巡检）':'已停用'}</span>
         </div>
       </div>
       <div id="signin_table_container">
