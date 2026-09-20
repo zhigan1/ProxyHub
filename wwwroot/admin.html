@@ -987,26 +987,33 @@ function renderAccountCards(groups){
       const hasBreaker = acc.openBreakers > 0;
 
       let creditValHtml = '';
-      let progressPercent = 100;
+      let progressPercent = 0;
       let progressColor = 'var(--ok)';
+      let creditSubText = '';
+      let showProgressBar = false;
 
       if(acc.credits != null){
         creditValHtml = `<span style="color:var(--ok);font-size:22px;font-weight:700;font-family:var(--mono)">${fmt(acc.credits)}</span>`;
-        if(acc.creditsTotal && acc.creditsTotal > 0 && acc.creditsUsed != null){
+        if(acc.creditsTotal != null && acc.creditsTotal > 0 && acc.creditsUsed != null){
           const pct = Math.max(0, Math.min(100, Math.round(((acc.creditsTotal - acc.creditsUsed) / acc.creditsTotal) * 100)));
           progressPercent = pct;
+          progressColor = !isEnabled ? 'var(--dim)' : hasBreaker ? 'var(--err)' : 'var(--ok)';
+          creditSubText = `已用 ${fmt(acc.creditsUsed)} / 总量 ${fmt(acc.creditsTotal)}`;
+          showProgressBar = true;
+        } else {
+          creditSubText = '总用量未知 (点击修改)';
+          progressPercent = 0;
+          progressColor = 'var(--dim)';
+          showProgressBar = true; // 置灰空条
         }
       } else if(adapter === 'traecn'){
         creditValHtml = `<span class="pill ok" style="font-size:12px" title="TraeCN 公测免扣积分">公测不限</span>`;
+        creditSubText = '免扣积分';
+        showProgressBar = false;
       } else {
         creditValHtml = `<span class="hint" style="font-size:18px;font-weight:600">—</span>`;
-        progressPercent = 0;
-      }
-
-      if(!isEnabled){
-        progressColor = 'var(--dim)';
-      } else if(hasBreaker){
-        progressColor = 'var(--err)';
+        creditSubText = '未设置 ✎';
+        showProgressBar = false;
       }
 
       const uid = acc.userId || acc.accountId || '-';
@@ -1033,12 +1040,14 @@ function renderAccountCards(groups){
                   ${creditValHtml}
                 </div>
                 <div class="hint" style="font-size:11px">
-                  ${acc.creditsTotal ? `总额 ${fmt(acc.creditsTotal)}` : (acc.credits != null ? '剩余额度 ✎' : (adapter === 'traecn' ? '免扣积分' : '未设置 ✎'))}
+                  ${esc(creditSubText)}
                 </div>
               </div>
-              <div class="bar-track" style="height:4px;margin-top:8px">
-                <div class="bar-fill" style="width:${progressPercent}%;background:${progressColor}"></div>
-              </div>
+              ${showProgressBar ? `
+                <div class="bar-track" style="height:4px;margin-top:8px">
+                  <div class="bar-fill" style="width:${progressPercent}%;background:${progressColor}"></div>
+                </div>
+              ` : ''}
             </div>
 
             <div class="hint mono" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(acc.source || '-')}">
