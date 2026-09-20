@@ -232,12 +232,11 @@ public sealed class SigninService
         var (token, deviceId) = creds.Value;
         try
         {
-            var entCreditsTask = FetchTraeCreditsAsync(token, deviceId, ct);
+            var entSummary = await FetchTraeCreditsAsync(token, deviceId, ct);
             using var req = TraeRequest("/trae/api/v2/ug/checkin_credits/status", token, deviceId);
             using var resp = await _http.SendAsync(req, ct);
             var body = await ParseJson(resp, ct);
-            var entCredits = await entCreditsTask;
-            return BuildTraeResult(account, body, (int)resp.StatusCode, null, fallbackCredits: entCredits);
+            return BuildTraeResult(account, body, (int)resp.StatusCode, null, credits: entSummary);
         }
         catch (Exception e)
         {
@@ -254,6 +253,9 @@ public sealed class SigninService
         var (token, deviceId) = creds.Value;
         try
         {
+            // 真实余额（ent_usage）与状态查询并行，供各分支 BuildTraeResult 使用
+            var entSummaryTask = FetchTraeCreditsAsync(token, deviceId, ct);
+
             // 1. 查状态
             using var statusReq = TraeRequest("/trae/api/v2/ug/checkin_credits/status", token, deviceId);
             using var statusResp = await _http.SendAsync(statusReq, ct);
@@ -264,7 +266,7 @@ public sealed class SigninService
             var already = Dig<bool?>(statusBody, "checked_in", "checkedIn") == true
                           || Dig<bool?>(statusBody, "did_checked_in", "didCheckedIn") == true;
             if (already)
-                return BuildTraeResult(account, statusBody, (int)statusResp.StatusCode, "ALREADY");
+                return BuildTraeResult(account, statusBody, (int)statusResp.StatusCode, "ALREADY", credits: await entSummaryTask);
 
             // 2. 领取签到。拥塞响应以 HTTP 200 + 文案送达（与 code 无关），积分并未到账：
             //    单次退避重试，仍拥塞报 ERROR（含「上游拥塞」），绝不兜底成 CLAIMED。
@@ -289,7 +291,7 @@ public sealed class SigninService
 
             var code = Dig<int?>(claimBody, "code") ?? 0;
             if (code == 9095)
-                return BuildTraeResult(account, statusBody, claimCode, "ALREADY");
+                return BuildTraeResult(account, statusBody, claimCode, "ALREADY", credits: await entSummaryTask);
 
             var credit = Dig<int?>(claimBody, "credits") ?? Dig<int?>(claimBody, "extra_credits", "extraCredits") ?? 50;
 
@@ -298,7 +300,7 @@ public sealed class SigninService
             using var resp2 = await _http.SendAsync(req2, ct);
             var fresh = await ParseJson(resp2, ct);
 
-            return BuildTraeResult(account, fresh ?? claimBody, claimCode, "CLAIMED", claimedCredit: credit);
+            return BuildTraeResult(account, fresh ?? claimBody, claimCode, "CLAIMED", claimedCredit: credit, credits: await entSummaryTask);
         }
         catch (Exception e)
         {
@@ -325,10 +327,13 @@ public sealed class SigninService
     private static string CongestionMessage(JsonNode? body) => Dig<string>(body, "message", "msg") ?? "上游繁忙";
 
     /// <summary>
-    /// Trae 积分余额专用端点 ide_user_ent_usage：sum(userEntitlementPackList[].…quota.creditsLimit)。
-    /// 独立于签到活动；失败静默返回 null。
+    /// Trae 积分查询 ide_user_ent_usage（实测上游结构，键为 snake_case）：
+    /// - usage_summary.total_amount / consumed_amount 为上游权威汇总（creditsLimit 是每包总额度上限，不是剩余；
+    ///   剩余 = 总量 − 已用，对齐 WorkBuddy 的 creditsRemain 语义）；
+    /// - 汇总缺失时逐包推导：剩余 = quota.credits_limit − usage.credits_amount（无积分额度的包不计）；
+    /// - 失败静默返回 null（调用方回退签到 status 的 credits 字段）。
     /// </summary>
-    private async Task<int?> FetchTraeCreditsAsync(string token, string deviceId, CancellationToken ct)
+    private async Task<CreditsSummary?> FetchTraeCreditsAsync(string token, string deviceId, CancellationToken ct)
     {
         try
         {
@@ -336,17 +341,69 @@ public sealed class SigninService
             using var resp = await _http.SendAsync(req, ct);
             if ((int)resp.StatusCode is < 200 or >= 300) return null;
             var body = await ParseJson(resp, ct);
-            var packs = Dig<JsonArray>(body, "userEntitlementPackList") ?? FindDeep<JsonArray>(body, "userEntitlementPackList");
+            if (body is null) return null;
+
+            // 1. 上游权威汇总（usage_summary：total_amount 总额度 / consumed_amount 已用 / consumption_ratio）
+            var usageSummary = (body["usage_summary"] ?? FindDeep<JsonNode>(body, "usage_summary")) as JsonObject;
+            if (usageSummary is not null)
+            {
+                var totalAmount = Dig<double?>(usageSummary, "total_amount", "totalAmount");
+                var consumed = Dig<double?>(usageSummary, "consumed_amount", "consumedAmount");
+                if (totalAmount is > 0 || consumed is > 0)
+                {
+                    var total = Math.Max(totalAmount ?? 0, 0);
+                    var used = Math.Max(consumed ?? 0, 0);
+                    var packsForCount = Dig<JsonArray>(body, "user_entitlement_pack_list", "userEntitlementPackList")
+                                        ?? FindDeep<JsonArray>(body, "user_entitlement_pack_list");
+                    return new CreditsSummary(
+                        (long)Math.Round(total - used, MidpointRounding.AwayFromZero),
+                        (long)Math.Round(used, MidpointRounding.AwayFromZero),
+                        (long)Math.Round(total, MidpointRounding.AwayFromZero),
+                        packsForCount is null ? 0 : CountTraeCreditPacks(packsForCount));
+                }
+            }
+
+            // 2. 汇总缺失时逐包推导（credits_limit 总额度 − usage.credits_amount 已用 = 剩余）
+            var packs = Dig<JsonArray>(body, "user_entitlement_pack_list", "userEntitlementPackList")
+                        ?? FindDeep<JsonArray>(body, "user_entitlement_pack_list");
             if (packs is null || packs.Count == 0) return null;
-            long total = 0;
+
+            double remainSum = 0, usedSum = 0, sizeSum = 0;
+            var count = 0;
             foreach (var pack in packs)
-                if (FindDeep<long?>(pack, "creditsLimit") is { } limit) total += limit;
-            return total > 0 ? (int?)total : null;
+            {
+                var limit = FindDeep<double?>(pack, "credits_limit") ?? FindDeep<double?>(pack, "creditsLimit");
+                if (limit is not { } lim || lim <= 0) continue; // 无积分额度的包（如免费订阅）不计
+                count++;
+                var packUsed = FindDeep<double?>(pack, "credits_amount") ?? FindDeep<double?>(pack, "creditsAmount") ?? 0;
+                packUsed = Math.Clamp(packUsed, 0, lim);
+                sizeSum += lim;
+                usedSum += packUsed;
+                remainSum += lim - packUsed;
+            }
+            if (count == 0) return null;
+            return new CreditsSummary(
+                (long)Math.Round(remainSum, MidpointRounding.AwayFromZero),
+                (long)Math.Round(usedSum, MidpointRounding.AwayFromZero),
+                (long)Math.Round(sizeSum, MidpointRounding.AwayFromZero),
+                count);
         }
         catch { return null; }
     }
 
-    private static SigninResult BuildTraeResult(AdapterAccount acc, JsonNode? body, int code, string? forceResult, int? claimedCredit = null, int? fallbackCredits = null)
+    /// <summary>统计含积分额度（quota.credits_limit &gt; 0）的套餐包数量。</summary>
+    private static int CountTraeCreditPacks(JsonArray packs)
+    {
+        var count = 0;
+        foreach (var pack in packs)
+        {
+            var limit = FindDeep<double?>(pack, "credits_limit") ?? FindDeep<double?>(pack, "creditsLimit");
+            if (limit is { } lim && lim > 0) count++;
+        }
+        return count;
+    }
+
+    private static SigninResult BuildTraeResult(AdapterAccount acc, JsonNode? body, int code, string? forceResult, int? claimedCredit = null, CreditsSummary? credits = null)
     {
         if (code is 401 or 403)
             return Fail(acc, "NO_SESSION", $"登录态失效（HTTP {code}）", null);
@@ -355,7 +412,8 @@ public sealed class SigninService
         if (!enable)
             return new SigninResult(acc.AdapterId, acc.AccountId, acc.Label, "trae", "INACTIVE", "签到活动未开启", null, null, null, false);
 
-        var credits = Dig<int?>(body, "credits", "total_credits", "totalCredits") ?? fallbackCredits;
+        // 实测签到 status 的 credits 字段是"当日签到包面值"，真实可用余额以 ent_usage 聚合为准（语义对齐 WorkBuddy 的 creditsRemain）
+        var credits2 = credits is not null ? (int?)credits.TotalRemain : Dig<int?>(body, "credits", "total_credits", "totalCredits");
         var checkedIn = Dig<bool?>(body, "checked_in", "checkedIn") ?? Dig<bool?>(body, "did_checked_in", "didCheckedIn");
         var todayCredit = claimedCredit ?? (checkedIn == true ? (Dig<int?>(body, "extra_credits", "extraCredits") ?? 50) : null);
 
@@ -365,12 +423,14 @@ public sealed class SigninService
         var result = forceResult ?? (checkedIn == true ? "ALREADY" : "OK");
         var report = result switch
         {
-            "CLAIMED" => $"签到成功 +{claimedCredit ?? 50}积分 · 累计可用额度 {credits}积分",
-            "ALREADY" => $"今日已签到 · 累计可用额度 {credits}积分",
-            "OK" => $"可用额度 {credits}积分 · 今日{(checkedIn == true ? "已签" : "未签")}",
+            "CLAIMED" => $"签到成功 +{claimedCredit ?? 50}积分 · 累计可用额度 {credits2}积分",
+            "ALREADY" => $"今日已签到 · 累计可用额度 {credits2}积分",
+            "OK" => $"可用额度 {credits2}积分 · 今日{(checkedIn == true ? "已签" : "未签")}",
             _ => body?["message"]?.GetValue<string>() ?? $"状态码 {code}",
         };
-        return new SigninResult(acc.AdapterId, acc.AccountId, acc.Label, "trae", result, report, credits, todayCredit, null, checkedIn);
+        return new SigninResult(acc.AdapterId, acc.AccountId, acc.Label, "trae", result, report,
+            credits2, todayCredit, null, checkedIn,
+            credits?.TotalUsed, credits?.TotalSize, credits?.PackCount);
     }
 
     // ─── WorkBuddy ────────────────────────────────────────
@@ -381,8 +441,8 @@ public sealed class SigninService
         string Name, string Uid, string AccessToken, string? RefreshToken, long? ExpiresAt,
         string? EnterpriseId, string? Domain, string Endpoint, string AuthFile);
 
-    /// <summary>WorkBuddy 积分资源汇总（get-user-resource 聚合；total_size 已按 TotalDosage 校准，total_used 已按 size-remain 补全）。</summary>
-    private sealed record WbCreditsSummary(long TotalRemain, long TotalUsed, long TotalSize, int PackCount);
+    /// <summary>积分资源汇总（WB=get-user-resource 聚合；Trae=ide_user_ent_usage。totalRemain=剩余可用，totalUsed=已用，totalSize=总量，PackCount=含积分额度的包数）。</summary>
+    private sealed record CreditsSummary(long TotalRemain, long TotalUsed, long TotalSize, int PackCount);
 
     private static WbAccount? LoadWbCredentials(AdapterAccount account)
     {
@@ -647,7 +707,7 @@ public sealed class SigninService
     /// - 单包取值三层回退（WbPackageRemainUsed），总量经 TotalDosage 校准、used 由 size-remain 补全；
     /// - 空套餐列表视为无数据返回 null（调用方回退签到 status 的 total_credits，对齐参考实现的 falsy 语义）。
     /// </summary>
-    private async Task<WbCreditsSummary?> FetchWbCreditsAsync(WbAccount wb, CancellationToken ct)
+    private async Task<CreditsSummary?> FetchWbCreditsAsync(WbAccount wb, CancellationToken ct)
     {
         try
         {
@@ -706,7 +766,7 @@ public sealed class SigninService
                 if (derived > totalUsed) totalUsed = Math.Max(derived, 0);
             }
 
-            return new WbCreditsSummary(totalRemain, totalUsed, totalSize, accounts.Count);
+            return new CreditsSummary(totalRemain, totalUsed, totalSize, accounts.Count);
         }
         catch { return null; }
     }
@@ -763,7 +823,7 @@ public sealed class SigninService
         return (lifeRemain, lifeUsed, lifeSize);
     }
 
-    private static SigninResult BuildWbResult(AdapterAccount acc, JsonNode? body, int code, string? forceResult, int? credit, WbCreditsSummary? credits = null)
+    private static SigninResult BuildWbResult(AdapterAccount acc, JsonNode? body, int code, string? forceResult, int? credit, CreditsSummary? credits = null)
     {
         // 官方资源查询命中时以真实聚合为准（含真实零余额）；未命中回退签到 status 的 total_credits
         var totalCredits = credits is not null ? (int?)credits.TotalRemain : Dig<int?>(body, "total_credits", "totalCredits");
@@ -838,23 +898,35 @@ public sealed class SigninService
         return false;
     }
 
-    /// <summary>全树深度查找首个命中 key 的值（对齐参考实现 find_key 语义；用于任意深度嵌套字段）。</summary>
+    /// <summary>
+    /// 全树深度查找首个命中 key 的值（对齐参考实现 find_key/normalize_key 语义：
+    /// 大小写与下划线都不敏感——creditsLimit 可命中 credits_limit；用于任意深度嵌套字段）。
+    /// </summary>
     private static T? FindDeep<T>(JsonNode? node, string key)
+    {
+        var norm = NormKey(key);
+        return FindDeepNorm<T>(node, norm);
+    }
+
+    private static string NormKey(string key) => key.Replace("_", "").ToLowerInvariant();
+
+    private static T? FindDeepNorm<T>(JsonNode? node, string normKey)
     {
         if (node is JsonObject obj)
         {
             foreach (var (k, v) in obj)
             {
-                if (string.Equals(k, key, StringComparison.OrdinalIgnoreCase))
+                if (NormKey(k) == normKey)
                 {
                     if (typeof(T) == typeof(JsonArray) && v is JsonArray ja) return (T)(object)ja;
+                    if (typeof(T) == typeof(JsonObject) && v is JsonObject jo) return (T)(object)jo;
                     if (v is JsonValue jv)
                     {
                         var coerced = Coerce<T>(jv);
                         if (coerced is not null) return coerced;
                     }
                 }
-                var nested = FindDeep<T>(v, key);
+                var nested = FindDeepNorm<T>(v, normKey);
                 if (nested is not null) return nested;
             }
         }
@@ -862,7 +934,7 @@ public sealed class SigninService
         {
             foreach (var item in arr)
             {
-                var found = FindDeep<T>(item, key);
+                var found = FindDeepNorm<T>(item, normKey);
                 if (found is not null) return found;
             }
         }
@@ -889,6 +961,10 @@ public sealed class SigninService
         {
             if (long.TryParse(text, out var l)) return (T)(object)l;
             if (double.TryParse(text, out var d)) return (T)(object)(long)d;
+        }
+        if (typeof(T) == typeof(double?) || typeof(T) == typeof(double))
+        {
+            if (double.TryParse(text, out var d)) return (T)(object)d;
         }
         if (typeof(T) == typeof(bool?) || typeof(T) == typeof(bool))
         {
