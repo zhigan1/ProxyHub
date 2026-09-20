@@ -431,7 +431,12 @@ public static class AdminApi
         app.MapGet("/admin/api/signin/status", async (HttpContext ctx) =>
         {
             if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
-            var results = await _signin.GetStatusAllAsync(rt, ctx.RequestAborted);
+            var results = (await _signin.GetStatusAllAsync(rt, ctx.RequestAborted)).ToList();
+            // 无签到能力的平台（如 qoder）显式标 UNSUPPORTED，便于前端统一渲染而非默默缺席
+            foreach (var adapter in rt.Adapters.Where(a => !SigninService.SigninAdapters.Contains(a.Id, StringComparer.OrdinalIgnoreCase)))
+                foreach (var acc in rt.Accounts.AllAccountsOf(adapter.Id))
+                    results.Add(new SigninResult(acc.AdapterId, acc.AccountId, acc.Label, adapter.Id, "UNSUPPORTED",
+                        "该平台暂无签到/积分查询能力", null, null, null, null));
             return Json(new
             {
                 autoSigninEnabled = rt.Config.Current.Admin.AutoSignin,
@@ -460,6 +465,7 @@ public static class AdminApi
     private static object ToJson(SigninResult r) => new
     {
         adapterId = r.AdapterId,
+        accountId = r.AccountId,
         label = r.AccountLabel,
         platform = r.Platform,
         result = r.Result,
@@ -469,6 +475,7 @@ public static class AdminApi
         streakDays = r.StreakDays,
         todayCheckedIn = r.TodayCheckedIn,
         errorDetail = r.ErrorDetail,
+        signinSupported = SigninService.SigninAdapters.Contains(r.AdapterId, StringComparer.OrdinalIgnoreCase),
     };
 
     // ─── 其他私有成员 ─────────────────────────────────────────────────────
