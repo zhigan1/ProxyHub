@@ -6,6 +6,7 @@
 <title>ProxyHub 控制台</title>
 <style>
 :root{
+  color-scheme:dark;
   --bg:#090d16;--bg2:#111827;--bg3:#1a2333;--line:#263346;
   --fg:#f1f5f9;--dim:#94a3b8;--dim2:#64748b;
   --acc:#3b82f6;--acc-hover:#60a5fa;--acc-bg:rgba(59,130,246,0.12);
@@ -18,6 +19,7 @@
   --pulse-shadow:rgba(16,185,129,0.6);
 }
 [data-theme="dark"]{
+  color-scheme:dark;
   --bg:#090d16;--bg2:#111827;--bg3:#1a2333;--line:#263346;
   --fg:#f1f5f9;--dim:#94a3b8;--dim2:#64748b;
   --acc:#3b82f6;--acc-hover:#60a5fa;--acc-bg:rgba(59,130,246,0.12);
@@ -28,6 +30,7 @@
   --pulse-shadow:rgba(16,185,129,0.6);
 }
 [data-theme="light"]{
+  color-scheme:light;
   --bg:#f8fafc;--bg2:#ffffff;--bg3:#f1f5f9;--line:#e2e8f0;
   --fg:#0f172a;--dim:#64748b;--dim2:#94a3b8;
   --acc:#2563eb;--acc-hover:#1d4ed8;--acc-bg:rgba(37,99,235,0.08);
@@ -38,6 +41,7 @@
   --pulse-shadow:rgba(5,150,105,0.5);
 }
 [data-theme="steel"]{
+  color-scheme:dark;
   --bg:#14171f;--bg2:#1d222d;--bg3:#272d3c;--line:#353e50;
   --fg:#e6edf3;--dim:#8b949e;--dim2:#656d76;
   --acc:#58a6ff;--acc-hover:#79b8ff;--acc-bg:rgba(88,166,255,0.12);
@@ -219,62 +223,170 @@ function renderTabs(){
 }
 function go(tab){ TAB=tab; renderTabs(); render(); }
 
-/* ─────────── Overview ─────────── */
+/* ─────────── Usage Filter & Overview ─────────── */
+let USAGE_FILTER = {
+  range: 'all', // 'all' | 'today' | '7d' | '30d' | 'custom'
+  from: '',
+  to: ''
+};
+
+function formatYMD(date){
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function getUsageRangeDates(range){
+  const now = new Date();
+  const todayStr = formatYMD(now);
+  if(range === 'today'){
+    return { from: todayStr, to: todayStr };
+  } else if(range === '7d'){
+    const d = new Date(now.getTime() - 6 * 86400000);
+    return { from: formatYMD(d), to: todayStr };
+  } else if(range === '30d'){
+    const d = new Date(now.getTime() - 29 * 86400000);
+    return { from: formatYMD(d), to: todayStr };
+  }
+  return { from: '', to: '' };
+}
+
+async function setUsageRange(range){
+  USAGE_FILTER.range = range;
+  if(range !== 'custom'){
+    const dates = getUsageRangeDates(range);
+    USAGE_FILTER.from = dates.from;
+    USAGE_FILTER.to = dates.to;
+  }
+  await renderOverview();
+}
+
+async function applyCustomUsageRange(){
+  const fromEl = document.getElementById('usage_from');
+  const toEl = document.getElementById('usage_to');
+  USAGE_FILTER.from = fromEl ? fromEl.value.trim() : '';
+  USAGE_FILTER.to = toEl ? toEl.value.trim() : '';
+  await renderOverview();
+}
+
 async function renderOverview(){
   const el = document.getElementById('content');
   el.innerHTML = '<div class="card hint">加载中…</div>';
   try{
-    const [d, grpData, activeRoutesRes] = await Promise.all([
+    const q = [];
+    if(USAGE_FILTER.from) q.push(`from=${encodeURIComponent(USAGE_FILTER.from)}`);
+    if(USAGE_FILTER.to) q.push(`to=${encodeURIComponent(USAGE_FILTER.to)}`);
+    q.push('top=10');
+    const usageQuery = '?' + q.join('&');
+
+    const [d, grpData, activeRoutesRes, usageSummaryRes] = await Promise.all([
       api('/admin/api/overview'),
       api('/admin/api/groups').catch(()=>({ groups: [] })),
-      api('/admin/api/groups/active-routes').catch(()=>null)
+      api('/admin/api/groups/active-routes').catch(()=>null),
+      api('/admin/api/usage/summary' + usageQuery).catch(()=>null)
     ]);
-    const days = d.usage?.byDay || [];
-    const today = days.length ? days[days.length-1] : {requests:0,tokens:0};
-    const totalReq = days.reduce((s,x)=>s+x.requests,0);
-    const totalTokens = days.reduce((s,x)=>s+(x.tokens||0),0);
-    const open = (d.breakers||[]).filter(b=>b.state==='open').length;
-    const byAdapter = d.usage?.byAdapter || {};
-    const groups = grpData.groups || [];
 
-    // 汇总模型排行榜
-    const modelStats = {};
-    let grandPrompt = 0, grandCompletion = 0;
-    for(const [adId, ad] of Object.entries(byAdapter)){
-      grandPrompt += (ad.promptTokens || 0);
-      grandCompletion += (ad.completionTokens || 0);
-      if(ad.models){
-        for(const [mName, mVal] of Object.entries(ad.models)){
-          if(!modelStats[mName]) modelStats[mName] = { requests: 0, tokens: 0, adapters: new Set() };
-          modelStats[mName].requests += (mVal.requests || 0);
-          modelStats[mName].tokens += (mVal.tokens || 0);
-          modelStats[mName].adapters.add(adId);
-        }
-      }
-    }
-    const sortedModels = Object.entries(modelStats).sort((a,b)=>b[1].tokens - a[1].tokens);
+    const daysAll = d.usage?.byDay || [];
+    const todayAll = daysAll.length ? daysAll[daysAll.length - 1] : { requests: 0, tokens: 0 };
+    const totalReq = daysAll.reduce((s, x) => s + x.requests, 0);
+    const totalTokens = daysAll.reduce((s, x) => s + (x.tokens || 0), 0);
+    const open = (d.breakers || []).filter(b => b.state === 'open').length;
 
-    // 自动模型路由数据：若后端 active-routes 接口已就绪则使用真实数据；未就绪则优雅展示空态/待就绪提示，不造假数据
+    // 1. 自动模型调度路由数据处理 (active-routes)
     let activeRoutes = null;
     if(activeRoutesRes && Array.isArray(activeRoutesRes.routes)){
       activeRoutes = activeRoutesRes.routes;
     }
 
+    // 2. Token 多维分析数据处理（优先使用持久化 usage/summary，回退到 overview 的 usage）
+    let usageData;
+    if(usageSummaryRes && typeof usageSummaryRes === 'object'){
+      usageData = {
+        source: usageSummaryRes.source || 'sqlite',
+        from: usageSummaryRes.from,
+        to: usageSummaryRes.to,
+        totals: usageSummaryRes.totals || { requests: 0, promptTokens: 0, completionTokens: 0, tokens: 0 },
+        byPlatform: Array.isArray(usageSummaryRes.byPlatform) ? usageSummaryRes.byPlatform : [],
+        topModels: Array.isArray(usageSummaryRes.topModels) ? usageSummaryRes.topModels : [],
+        byDay: Array.isArray(usageSummaryRes.byDay) ? usageSummaryRes.byDay : []
+      };
+    } else {
+      // 回退内存聚合
+      const memByAdapter = d.usage?.byAdapter || {};
+      const memByPlatform = Object.entries(memByAdapter).map(([ad, st]) => {
+        const prompt = st.promptTokens || 0;
+        const completion = st.completionTokens || 0;
+        return {
+          adapterId: ad,
+          requests: st.requests || 0,
+          promptTokens: prompt,
+          completionTokens: completion,
+          tokens: prompt + completion
+        };
+      });
+      const memModels = {};
+      for(const [adId, ad] of Object.entries(memByAdapter)){
+        if(ad.models){
+          for(const [mName, mVal] of Object.entries(ad.models)){
+            if(!memModels[mName]) memModels[mName] = { model: mName, requests: 0, tokens: 0 };
+            memModels[mName].requests += (mVal.requests || 0);
+            memModels[mName].tokens += (mVal.tokens || 0);
+          }
+        }
+      }
+      const memTopModels = Object.values(memModels).sort((a, b) => b.tokens - a.tokens).slice(0, 10);
+      const memByDay = d.usage?.byDay || [];
+      const memTotals = {
+        requests: memByPlatform.reduce((s, x) => s + x.requests, 0),
+        promptTokens: memByPlatform.reduce((s, x) => s + x.promptTokens, 0),
+        completionTokens: memByPlatform.reduce((s, x) => s + x.completionTokens, 0),
+        tokens: memByPlatform.reduce((s, x) => s + x.tokens, 0)
+      };
+
+      usageData = {
+        source: 'memory',
+        from: null,
+        to: null,
+        totals: memTotals,
+        byPlatform: memByPlatform,
+        topModels: memTopModels,
+        byDay: memByDay
+      };
+    }
+
+    // 确定时间筛选标签与源标识
+    let rangeLabel = '全部周期';
+    if(USAGE_FILTER.range === 'today') rangeLabel = '今日';
+    else if(USAGE_FILTER.range === '7d') rangeLabel = '近 7 天';
+    else if(USAGE_FILTER.range === '30d') rangeLabel = '近 30 天';
+    else if(USAGE_FILTER.range === 'custom') rangeLabel = `${USAGE_FILTER.from || '起始'} 至 ${USAGE_FILTER.to || '至今'}`;
+
+    const isSqlite = usageData.source === 'sqlite';
+    const sourceBadge = isSqlite
+      ? '<span class="pill ok" title="已启用 SQLite 持久化存储，重启后数据不丢失">● SQLite 已持久化</span>'
+      : '<span class="pill warn" title="当前用量保存在内存中，重启后将归零">⚠️ 内存存储</span>';
+    const sourceHint = isSqlite
+      ? '<span class="hint" style="font-size:12px;color:var(--dim)">用量已持久化存储，跨服务重启保留</span>'
+      : '<span class="hint" style="font-size:12px;color:var(--warn);font-weight:500">未启用持久化，重启后归零</span>';
+
+    const currentTotalTokens = usageData.totals.tokens || usageData.byPlatform.reduce((s, x) => s + (x.tokens || 0), 0);
+
     el.innerHTML = `
       <div class="grid c4">
         <div class="card stat ok">
-          <div class="v">${d.adapters.filter(a=>a.ready).length} / ${d.adapters.length}</div>
+          <div class="v">${d.adapters.filter(a => a.ready).length} / ${d.adapters.length}</div>
           <div class="k">适配器在线状态</div>
         </div>
         <div class="card stat">
-          <div class="v">${fmt(today.requests||0)}</div>
-          <div class="k">今日请求数（累计 ${fmt(totalReq)}）</div>
+          <div class="v">${fmt(usageData.totals.requests != null ? usageData.totals.requests : todayAll.requests || 0)}</div>
+          <div class="k">${rangeLabel}请求（累计 ${fmt(totalReq)}）</div>
         </div>
         <div class="card stat">
-          <div class="v">${fmt(today.tokens||0)}</div>
-          <div class="k">今日 Tokens（累计 ${fmt(totalTokens)}）</div>
+          <div class="v">${fmt(usageData.totals.tokens != null ? usageData.totals.tokens : todayAll.tokens || 0)}</div>
+          <div class="k">${rangeLabel} Tokens（累计 ${fmt(totalTokens)}）</div>
         </div>
-        <div class="card stat ${open?'err':''}">
+        <div class="card stat ${open ? 'err' : ''}">
           <div class="v">${open}</div>
           <div class="k">熔断隔离节点</div>
         </div>
@@ -282,54 +394,169 @@ async function renderOverview(){
 
       <!-- ⚡ 自动模型实时调度路由看板 -->
       <div class="card">
-        <div class="row" style="justify-content:space-between;margin-bottom:12px">
-          <h3 style="margin-bottom:0">⚡ 自动模型实时调度监控 (Auto-Routing Status)</h3>
-          <span class="hint">客户端请求自动分组时，系统首选路由的平台、账号及真实上游模型</span>
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div>
+            <h3 style="margin-bottom:2px">⚡ 自动模型实时调度监控 (Auto-Routing Status)</h3>
+            <span class="hint">客户端请求虚拟分组时，系统当前动态选中的平台、账号及真实底层模型</span>
+          </div>
+          <span class="mono hint" style="font-size:11px">共 ${activeRoutes ? activeRoutes.length : 0} 个分组</span>
         </div>
+
         ${activeRoutes === null ? `
           <div style="padding:22px;text-align:center;background:var(--bg3);border-radius:var(--border-radius);border:1px dashed var(--line)">
             <div style="margin-bottom:6px"><span class="pill dim">● 数据源未就绪</span></div>
-            <div class="hint">实时调度监控端点 (<code>/admin/api/groups/active-routes</code>) 正在等待后端就绪，就绪后将在此实时展示各分组的首选目标平台、账号与模型状态。</div>
+            <div class="hint">实时调度监控端点 (<code>/admin/api/groups/active-routes</code>) 正在就绪中，就绪后将在此展示各分组的实时首选路由与健康状态。</div>
           </div>
         ` : (activeRoutes.length ? `
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px">
             ${activeRoutes.map(item => {
-              const r = item.route;
-              const isOk = r && r.breaker !== 'open';
-              const statusClass = !r ? 'err' : (r.fallback ? 'warn' : 'ok');
-              const statusText = !r ? '无可用节点' : (r.fallback ? (r.breaker === 'open' ? '全熔断' : '降级切换中') : '正常直通');
-              return `
-                <div class="route-item">
-                  <div>
-                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-                      <span class="mono" style="font-weight:700;font-size:14px">${esc(item.group)}</span>
-                      <span class="pill ${statusClass}" style="font-size:10px">${statusText}</span>
+              let statusBadge = '';
+              let descBox = '';
+              const nodeIdxStr = item.nodeIndex != null ? '#' + (item.nodeIndex + 1) : '-';
+
+              let creditBadge = '';
+              if (item.credits != null) {
+                creditBadge = `<span class="mono" style="color:var(--ok);font-size:11px;font-weight:600">${fmt(item.credits)} 积分</span>`;
+              } else if (item.adapterId === 'traecn') {
+                creditBadge = `<span class="pill ok" style="font-size:10px">公测不限</span>`;
+              }
+
+              if (item.status === 'normal') {
+                statusBadge = '<span class="pill ok" style="font-size:11px">● 正常直通</span>';
+                descBox = `
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px;flex-wrap:wrap">
+                    <div>
+                      <span style="color:var(--dim)">首选平台:</span>
+                      <span class="mono" style="font-weight:600;color:var(--fg);margin-left:4px">${esc(item.adapterId || '-')}</span>
+                      ${item.accountLabel || item.accountId ? `
+                        <span style="color:var(--dim);margin:0 4px">·</span>
+                        <span style="color:var(--dim)">账号:</span>
+                        <span class="mono" style="color:var(--acc);font-weight:600;margin-left:4px">${esc(item.accountLabel || item.accountId)}</span>
+                      ` : ''}
                     </div>
-                    <div class="hint" style="font-size:12px;margin-bottom:2px">
-                      目标平台: <span class="mono" style="color:var(--fg);font-weight:600">${esc(r?.adapter||'-')}</span>
-                      ${r?.account ? ` · 账号: <span class="mono" style="color:var(--acc)">${esc(r.account)}</span>` : ''}
-                    </div>
-                    <div class="hint" style="font-size:12px">
-                      上游模型: <span class="mono" style="color:var(--fg)">${esc(r?.model||'-')}</span>
+                    ${creditBadge}
+                  </div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+                    <div>
+                      <span style="color:var(--dim)">底层模型:</span>
+                      <span class="mono" style="color:var(--fg);font-weight:500;margin-left:4px">${esc(item.model || '-')}</span>
                     </div>
                   </div>
-                  <div style="text-align:right">
-                    <div class="mono hint" style="font-size:11px">${item.candidates||0} 节点备选</div>
-                    <div style="margin-top:6px">
-                      <span class="pill ${isOk?'ok':'err'}" style="font-size:10px">${isOk?'● 生效中':'● 避让中'}</span>
+                `;
+              } else if (item.status === 'half-open') {
+                statusBadge = '<span class="pill warn" style="font-size:11px">◐ 降级切换中（半开探测）</span>';
+                descBox = `
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px;flex-wrap:wrap">
+                    <div>
+                      <span style="color:var(--dim)">探测平台:</span>
+                      <span class="mono" style="font-weight:600;color:var(--fg);margin-left:4px">${esc(item.adapterId || '-')}</span>
+                      ${item.accountLabel || item.accountId ? `
+                        <span style="color:var(--dim);margin:0 4px">·</span>
+                        <span style="color:var(--dim)">账号:</span>
+                        <span class="mono" style="color:var(--acc);font-weight:600;margin-left:4px">${esc(item.accountLabel || item.accountId)}</span>
+                      ` : ''}
                     </div>
+                    ${creditBadge}
+                  </div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+                    <div>
+                      <span style="color:var(--dim)">底层模型:</span>
+                      <span class="mono" style="color:var(--fg);font-weight:500;margin-left:4px">${esc(item.model || '-')}</span>
+                    </div>
+                    <span class="hint" style="color:var(--warn);font-size:11px">冷却期满探测放行中</span>
+                  </div>
+                `;
+              } else if (item.status === 'avoiding') {
+                statusBadge = '<span class="pill warn" style="font-size:11px">↷ 避让中（首选已后移）</span>';
+                descBox = `
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px;flex-wrap:wrap">
+                    <div>
+                      <span style="color:var(--dim)">避让切换至:</span>
+                      <span class="mono" style="font-weight:600;color:var(--fg);margin-left:4px">${esc(item.adapterId || '-')}</span>
+                      ${item.accountLabel || item.accountId ? `
+                        <span style="color:var(--dim);margin:0 4px">·</span>
+                        <span style="color:var(--dim)">账号:</span>
+                        <span class="mono" style="color:var(--acc);font-weight:600;margin-left:4px">${esc(item.accountLabel || item.accountId)}</span>
+                      ` : ''}
+                    </div>
+                    ${creditBadge}
+                  </div>
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+                    <div>
+                      <span style="color:var(--dim)">底层模型:</span>
+                      <span class="mono" style="color:var(--fg);font-weight:500;margin-left:4px">${esc(item.model || '-')}</span>
+                    </div>
+                    ${item.preferredAdapterId ? `
+                      <span class="hint" style="font-size:11px">首选: <span class="mono">${esc(item.preferredAdapterId)}</span></span>
+                    ` : ''}
+                  </div>
+                `;
+              } else if (item.status === 'blocked') {
+                statusBadge = '<span class="pill err" style="font-size:11px">✖ 全部熔断</span>';
+                descBox = `
+                  <div style="color:var(--err);font-size:12px;margin-bottom:2px">全部 ${item.candidates || 0} 个候选节点均处于熔断隔离状态</div>
+                  ${item.preferredAdapterId ? `
+                    <div class="hint" style="font-size:11px">首选期望: <span class="mono">${esc(item.preferredAdapterId)}</span>${item.preferredModel ? ` · <span class="mono">${esc(item.preferredModel)}</span>` : ''}</div>
+                  ` : ''}
+                `;
+              } else if (item.status === 'empty') {
+                statusBadge = '<span class="pill dim" style="font-size:11px">∅ 无候选</span>';
+                descBox = '<div class="hint" style="font-size:12px">未匹配到任何可用平台或模型候选节点</div>';
+              } else {
+                statusBadge = `<span class="pill dim" style="font-size:11px">${esc(item.status || 'unknown')}</span>`;
+                descBox = `<div class="hint" style="font-size:12px">平台: ${esc(item.adapterId || '-')} · 模型: ${esc(item.model || '-')}</div>`;
+              }
+
+              return `
+                <div class="route-item" style="flex-direction:column;align-items:stretch;gap:8px;padding:12px 14px">
+                  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                      <span class="mono" style="font-weight:700;font-size:14px;color:var(--fg)">${esc(item.group)}</span>
+                      ${statusBadge}
+                    </div>
+                    <div class="mono hint" style="font-size:11px">
+                      ${item.nodeIndex != null ? `<span style="color:var(--acc);font-weight:600">${nodeIdxStr}</span> / ` : ''}${item.candidates || 0} 候选
+                    </div>
+                  </div>
+
+                  ${item.description ? `<div class="hint" style="font-size:12px;color:var(--dim2);margin-top:-2px">${esc(item.description)}</div>` : ''}
+
+                  <div style="background:var(--bg2);border:1px solid var(--line);border-radius:4px;padding:8px 10px;font-size:12px;margin-top:2px">
+                    ${descBox}
                   </div>
                 </div>
               `;
             }).join('')}
           </div>
-        ` : '<div class="hint" style="text-align:center;padding:12px">暂无活动路由信息</div>')}
+        ` : '<div class="hint" style="text-align:center;padding:18px">暂无分组调度配置（未配置 groups 且未生成默认分组）</div>')}
       </div>
 
       <!-- 📊 Token 平台与模型多维度分析 -->
       <div class="grid c3" style="margin-bottom:14px">
         <div class="card" style="grid-column: span 2">
-          <h3>平台用量与 Token 占比</h3>
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <h3 style="margin-bottom:0">平台用量与 Token 占比</h3>
+              ${sourceBadge}
+              ${sourceHint}
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              <button class="small ${USAGE_FILTER.range === 'all' ? 'primary' : ''}" onclick="setUsageRange('all')">全部</button>
+              <button class="small ${USAGE_FILTER.range === 'today' ? 'primary' : ''}" onclick="setUsageRange('today')">今日</button>
+              <button class="small ${USAGE_FILTER.range === '7d' ? 'primary' : ''}" onclick="setUsageRange('7d')">近 7 天</button>
+              <button class="small ${USAGE_FILTER.range === '30d' ? 'primary' : ''}" onclick="setUsageRange('30d')">近 30 天</button>
+              <button class="small ${USAGE_FILTER.range === 'custom' ? 'primary' : ''}" onclick="setUsageRange('custom')">自定义</button>
+              ${USAGE_FILTER.range === 'custom' ? `
+                <div style="display:inline-flex;align-items:center;gap:4px;margin-left:4px">
+                  <input type="date" id="usage_from" value="${esc(USAGE_FILTER.from)}" style="padding:2px 6px;font-size:12px;height:26px">
+                  <span class="hint">-</span>
+                  <input type="date" id="usage_to" value="${esc(USAGE_FILTER.to)}" style="padding:2px 6px;font-size:12px;height:26px">
+                  <button class="small primary" onclick="applyCustomUsageRange()">查询</button>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+
           <table>
             <thead>
               <tr>
@@ -342,16 +569,15 @@ async function renderOverview(){
               </tr>
             </thead>
             <tbody>
-              ${Object.entries(byAdapter).map(([ad, st]) => {
-                const tokens = (st.promptTokens||0) + (st.completionTokens||0);
-                const pct = totalTokens > 0 ? ((tokens / totalTokens) * 100).toFixed(1) : '0';
+              ${usageData.byPlatform.map(p => {
+                const pct = currentTotalTokens > 0 ? ((p.tokens / currentTotalTokens) * 100).toFixed(1) : '0';
                 return `
                   <tr>
-                    <td class="mono" style="font-weight:600">${esc(ad)}</td>
-                    <td class="mono">${fmt(st.requests||0)}</td>
-                    <td class="mono hint">${fmt(st.promptTokens||0)}</td>
-                    <td class="mono hint">${fmt(st.completionTokens||0)}</td>
-                    <td class="mono" style="font-weight:600;color:var(--acc)">${fmt(tokens)}</td>
+                    <td class="mono" style="font-weight:600">${esc(p.adapterId)}</td>
+                    <td class="mono">${fmt(p.requests || 0)}</td>
+                    <td class="mono hint">${fmt(p.promptTokens || 0)}</td>
+                    <td class="mono hint">${fmt(p.completionTokens || 0)}</td>
+                    <td class="mono" style="font-weight:600;color:var(--acc)">${fmt(p.tokens || 0)}</td>
                     <td>
                       <div style="display:flex;align-items:center;gap:8px">
                         <div class="bar-track" style="flex:1"><div class="bar-fill" style="width:${pct}%;background:var(--acc)"></div></div>
@@ -361,14 +587,17 @@ async function renderOverview(){
                   </tr>
                 `;
               }).join('')}
-              ${!Object.keys(byAdapter).length ? '<tr><td colspan="6" class="hint" style="text-align:center;padding:16px">暂无平台用量数据（数据源未就绪或尚未产生请求）</td></tr>' : ''}
+              ${!usageData.byPlatform.length ? '<tr><td colspan="6" class="hint" style="text-align:center;padding:16px">所选时间范围内暂无平台用量数据</td></tr>' : ''}
             </tbody>
           </table>
         </div>
 
         <div class="card">
-          <h3>模型用量排行 TOP</h3>
-          <div style="max-height:220px;overflow-y:auto">
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="margin-bottom:0">模型用量排行 TOP</h3>
+            <span class="hint" style="font-size:11px">按 Tokens 降序</span>
+          </div>
+          <div style="max-height:240px;overflow-y:auto">
             <table>
               <thead>
                 <tr>
@@ -378,14 +607,14 @@ async function renderOverview(){
                 </tr>
               </thead>
               <tbody>
-                ${sortedModels.slice(0, 10).map(([mName, st]) => `
+                ${usageData.topModels.map(m => `
                   <tr>
-                    <td class="mono" style="font-size:12px;font-weight:500">${esc(mName)}</td>
-                    <td class="mono hint">${st.requests}</td>
-                    <td class="mono" style="color:var(--ok);font-weight:600">${fmt(st.tokens)}</td>
+                    <td class="mono" style="font-size:12px;font-weight:500">${esc(m.model)}</td>
+                    <td class="mono hint">${fmt(m.requests || 0)}</td>
+                    <td class="mono" style="color:var(--ok);font-weight:600">${fmt(m.tokens || 0)}</td>
                   </tr>
                 `).join('')}
-                ${!sortedModels.length ? '<tr><td colspan="3" class="hint" style="text-align:center;padding:16px">暂无模型统计（数据源未就绪或尚未产生请求）</td></tr>' : ''}
+                ${!usageData.topModels.length ? '<tr><td colspan="3" class="hint" style="text-align:center;padding:16px">所选时间范围内暂无模型统计</td></tr>' : ''}
               </tbody>
             </table>
           </div>
@@ -394,8 +623,8 @@ async function renderOverview(){
 
       <div class="card">
         <div class="row" style="justify-content:space-between;margin-bottom:8px">
-          <h3 style="margin-bottom:0">每日请求与 Token 趋势</h3>
-          <span class="hint">近 14 天用量曲线</span>
+          <h3 style="margin-bottom:0">请求与 Token 趋势</h3>
+          <span class="hint">${rangeLabel}用量曲线（共 ${usageData.byDay.length} 天）</span>
         </div>
         <canvas id="chart"></canvas>
       </div>
@@ -407,12 +636,12 @@ async function renderOverview(){
             <tr><th>平台</th><th>状态</th><th>账号数</th><th>可用模型</th><th>异常诊断</th></tr>
           </thead>
           <tbody>
-            ${d.adapters.map(a=>`<tr>
+            ${d.adapters.map(a => `<tr>
               <td class="mono" style="font-weight:600">${a.id}</td>
-              <td>${a.ready?'<span class="pill ok">● ready</span>':'<span class="pill err">● down</span>'}</td>
+              <td>${a.ready ? '<span class="pill ok">● ready</span>' : '<span class="pill err">● down</span>'}</td>
               <td><span class="mono">${a.accounts}</span></td>
               <td><span class="mono">${a.models}</span></td>
-              <td class="hint">${esc(a.error||'-')}</td>
+              <td class="hint">${esc(a.error || '-')}</td>
             </tr>`).join('')}
           </tbody>
         </table>
@@ -420,8 +649,8 @@ async function renderOverview(){
 
       <div class="card"><h3>熔断隔离节点</h3><div id="bk"></div></div>`;
 
-    drawChart(days);
-    renderBreakers(d.breakers||[]);
+    drawChart(usageData.byDay);
+    renderBreakers(d.breakers || []);
   }catch(e){ el.innerHTML = `<div class="card" style="color:var(--err)">${esc(e.message)}</div>`; }
 }
 function renderBreakers(list){
@@ -452,18 +681,24 @@ function drawChart(days){
   const dim = style.getPropertyValue('--dim').trim() || '#94a3b8';
 
   g.fillStyle=bg3; g.fillRect(0,0,W,H);
-  const data = days.slice(-14);
-  const max = Math.max(1,...data.map(x=>x.requests));
+  const data = Array.isArray(days) ? days : [];
+  const max = Math.max(1,...data.map(x=>x.requests||0));
   g.strokeStyle=line;
   g.lineWidth = 1;
   for(let i=0;i<=4;i++){ const y=10+(H-40)*i/4; g.beginPath(); g.moveTo(pad,y); g.lineTo(W-8,y); g.stroke(); }
   if(data.length){
     const step=(W-pad-12)/Math.max(1,data.length-1);
     g.beginPath(); g.strokeStyle=acc; g.lineWidth=2.5;
-    data.forEach((d,i)=>{ const x=pad+i*step, y=10+(H-40)*(1-d.requests/max); i?g.lineTo(x,y):g.moveTo(x,y); });
+    data.forEach((d,i)=>{ const x=pad+i*step, y=10+(H-40)*(1-(d.requests||0)/max); i?g.lineTo(x,y):g.moveTo(x,y); });
     g.stroke();
     g.fillStyle=dim; g.font='10px monospace';
-    data.forEach((d,i)=>{ if(i%Math.ceil(data.length/7)===0) g.fillText(d.date.slice(5), pad+i*step-12, H-6); });
+    const labelStep = Math.max(1, Math.ceil(data.length / 7));
+    data.forEach((d,i)=>{
+      if(i % labelStep === 0 || i === data.length - 1) {
+        const txt = d.date ? (d.date.length > 5 ? d.date.slice(5) : d.date) : '';
+        g.fillText(txt, pad+i*step-12, H-6);
+      }
+    });
     g.fillStyle=acc; g.font='11px monospace'; g.fillText('峰值 '+max+' 次', W-80, 14);
   } else { g.fillStyle=dim; g.font='12px sans-serif'; g.fillText('暂无用量数据', W/2-40, H/2); }
 }
