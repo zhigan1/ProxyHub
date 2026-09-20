@@ -93,7 +93,8 @@ public sealed class SigninService
             var r = await SigninAsync(acc, ct);
             results.Add(r);
             if (r.TotalCredits.HasValue)
-                rt.Accounts.UpdateCredit(acc.AdapterId, acc.AccountId, r.TotalCredits.Value, rt.ConfigStore);
+                rt.Accounts.UpdateCredit(acc.AdapterId, acc.AccountId, r.TotalCredits, rt.ConfigStore,
+                    r.CreditsUsed, r.CreditsTotal, r.PackCount);
             if (IsSessionDead(r)) DisableAccount(rt, acc);
             consecutiveCongestion = IsCongestion(r) ? consecutiveCongestion + 1 : 0;
             if (accounts.Count > 1) await Task.Delay(_interAccountDelay, ct);
@@ -113,7 +114,8 @@ public sealed class SigninService
             var r = await GetStatusAsync(acc, ct);
             results.Add(r);
             if (r.TotalCredits.HasValue)
-                rt.Accounts.UpdateCredit(acc.AdapterId, acc.AccountId, r.TotalCredits.Value, rt.ConfigStore);
+                rt.Accounts.UpdateCredit(acc.AdapterId, acc.AccountId, r.TotalCredits, rt.ConfigStore,
+                    r.CreditsUsed, r.CreditsTotal, r.PackCount);
             if (IsSessionDead(r)) DisableAccount(rt, acc);
         }
         return results;

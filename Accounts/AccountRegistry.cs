@@ -15,6 +15,9 @@ public sealed class AccountRegistry
     private readonly ConcurrentDictionary<string, bool> _deleted = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _customOrder = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, int> _credits = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, long> _creditsUsed = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, long> _creditsTotal = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _packCount = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
 
     /// <summary>重新执行各适配器的本机账号扫描；单个适配器失败记空列表，不影响其他平台。</summary>
@@ -92,7 +95,18 @@ public sealed class AccountRegistry
             var initialOrder = a.Order > 0 ? a.Order : (idx + 1);
             var order = _customOrder.TryGetValue(key, out var o) ? o : initialOrder;
             var credits = _credits.TryGetValue(key, out var c) ? (int?)c : a.Credits;
-            return a with { Enabled = isEnabled, Order = order, Credits = credits };
+            long? creditsUsed = _creditsUsed.TryGetValue(key, out var cu) ? cu : null;
+            long? creditsTotal = _creditsTotal.TryGetValue(key, out var ct) ? ct : null;
+            int? packCount = _packCount.TryGetValue(key, out var pc) ? pc : null;
+            return a with
+            {
+                Enabled = isEnabled,
+                Order = order,
+                Credits = credits,
+                CreditsUsed = creditsUsed,
+                CreditsTotal = creditsTotal,
+                PackCount = packCount,
+            };
         }).OrderBy(a => a.Order).ToList();
     }
 
@@ -121,6 +135,15 @@ public sealed class AccountRegistry
 
             if (s.Credits.HasValue) _credits[key] = s.Credits.Value;
             else _credits.TryRemove(key, out _);
+
+            if (s.CreditsUsed.HasValue) _creditsUsed[key] = s.CreditsUsed.Value;
+            else _creditsUsed.TryRemove(key, out _);
+
+            if (s.CreditsTotal.HasValue) _creditsTotal[key] = s.CreditsTotal.Value;
+            else _creditsTotal.TryRemove(key, out _);
+
+            if (s.PackCount.HasValue) _packCount[key] = s.PackCount.Value;
+            else _packCount.TryRemove(key, out _);
         }
     }
 
@@ -134,6 +157,9 @@ public sealed class AccountRegistry
                 .Concat(_deleted.Keys)
                 .Concat(_customOrder.Keys)
                 .Concat(_credits.Keys)
+                .Concat(_creditsUsed.Keys)
+                .Concat(_creditsTotal.Keys)
+                .Concat(_packCount.Keys)
                 .Distinct(StringComparer.OrdinalIgnoreCase);
 
             foreach (var key in allKeys)
@@ -143,6 +169,9 @@ public sealed class AccountRegistry
                 if (_deleted.ContainsKey(key)) item["deleted"] = true;
                 if (_customOrder.TryGetValue(key, out var o)) item["order"] = o;
                 if (_credits.TryGetValue(key, out var c)) item["credits"] = c;
+                if (_creditsUsed.TryGetValue(key, out var cu)) item["creditsUsed"] = cu;
+                if (_creditsTotal.TryGetValue(key, out var ct)) item["creditsTotal"] = ct;
+                if (_packCount.TryGetValue(key, out var pc)) item["packCount"] = pc;
                 settingsObj[key] = item;
             }
 
@@ -260,12 +289,35 @@ public sealed class AccountRegistry
         if (store is not null) PersistSettings(store);
     }
 
-    public void UpdateCredit(string adapterId, string accountId, int? credits, ConfigStore? store = null)
+    /// <summary>
+    /// 签到/积分查询回写：credits=剩余可用；用量维度（已用/总量/包数）来自同一快照，
+    /// 传 null 表示保留旧值（瞬时查询失败不清空账号页进度条）。
+    /// </summary>
+    public void UpdateCredit(string adapterId, string accountId, int? credits, ConfigStore? store = null,
+        long? creditsUsed = null, long? creditsTotal = null, int? packCount = null)
     {
         var key = AccountKey(adapterId, accountId);
         if (credits.HasValue) _credits[key] = credits.Value;
         else _credits.TryRemove(key, out _);
 
+        if (creditsUsed.HasValue) _creditsUsed[key] = creditsUsed.Value;
+        if (creditsTotal.HasValue) _creditsTotal[key] = creditsTotal.Value;
+        if (packCount.HasValue) _packCount[key] = packCount.Value;
+
+        if (store is not null) PersistSettings(store);
+    }
+
+    /// <summary>
+    /// 手工编辑剩余积分的联动：已知总量时重算已用（used = max(total − credits, 0)，恒满足 total ≥ used）；
+    /// credits &gt; total 时 used 归零（剩余超过已知总量说明上游总量已变化，保留旧 total 待下次查询校正）；
+    /// 无总量则用量维度保持原状（避免凭空编造 total）。
+    /// </summary>
+    public void UpdateCreditManual(string adapterId, string accountId, int credits, ConfigStore? store = null)
+    {
+        var key = AccountKey(adapterId, accountId);
+        _credits[key] = credits;
+        if (_creditsTotal.TryGetValue(key, out var total))
+            _creditsUsed[key] = Math.Max(total - credits, 0);
         if (store is not null) PersistSettings(store);
     }
 

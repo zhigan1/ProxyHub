@@ -277,6 +277,9 @@ public static class AdminApi
                         acc.Label,
                         userId = acc.UserId ?? acc.Label,
                         credits = acc.Credits,
+                        creditsUsed = acc.CreditsUsed,   // 已用积分（最近一次查询快照，config.json 持久化）
+                        creditsTotal = acc.CreditsTotal, // 总量
+                        packCount = acc.PackCount,       // 含积分额度的套餐包数
                         acc.Enabled,
                         acc.Order,
                         source = acc.SourceFile is not null ? acc.SourceFile : acc.Pat is not null ? "pat" : "builtin",
@@ -326,7 +329,8 @@ public static class AdminApi
             if (string.IsNullOrEmpty(adapter) || string.IsNullOrEmpty(accountId) || !credits.HasValue)
                 return Error("adapter, accountId and credits required", StatusCodes.Status400BadRequest);
 
-            rt.Accounts.UpdateCredit(adapter, accountId, credits.Value, rt.ConfigStore);
+            // 手工改剩余值的联动：已知总量则重算已用（used = max(total − credits, 0)），无总量则用量维度保持原状
+            rt.Accounts.UpdateCreditManual(adapter, accountId, credits.Value, rt.ConfigStore);
             return Json(new { ok = true, adapter, accountId, credits = credits.Value });
         });
 

@@ -27,13 +27,16 @@ public sealed record ManualAccount
     public string? Pat { get; init; }
 }
 
-/// <summary>账号状态持久化：禁用、删除、自定义顺位、自定义/缓存积分。</summary>
+/// <summary>账号状态持久化：禁用、删除、自定义顺位、自定义/缓存积分，以及最近一次查询的积分用量维度。</summary>
 public sealed record AccountSetting
 {
     public bool Disabled { get; init; }
     public bool Deleted { get; init; }
     public int? Order { get; init; }
     public int? Credits { get; init; }
+    public long? CreditsUsed { get; init; }
+    public long? CreditsTotal { get; init; }
+    public int? PackCount { get; init; }
 }
 
 /// <summary>管理页与自动签到配置。</summary>
@@ -158,6 +161,9 @@ public sealed record ProxyHubConfig
                 Deleted = s["deleted"] is JsonValue delv && delv.TryGetValue<bool>(out var del) && del,
                 Order = s["order"] is JsonValue ov && ov.TryGetValue<int>(out var o) ? o : null,
                 Credits = s["credits"] is JsonValue cv && cv.TryGetValue<int>(out var c) ? c : null,
+                CreditsUsed = s["creditsUsed"] is JsonValue uv && uv.TryGetValue<long>(out var cu) ? cu : null,
+                CreditsTotal = s["creditsTotal"] is JsonValue tv && tv.TryGetValue<long>(out var ct) ? ct : null,
+                PackCount = s["packCount"] is JsonValue pv && pv.TryGetValue<int>(out var pc) ? pc : null,
             };
         }
         return result;
