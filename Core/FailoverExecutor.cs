@@ -168,9 +168,15 @@ public sealed class FailoverExecutor
             ct.ThrowIfCancellationRequested();
             var node = chain[i];
 
+            if (!_breakers.TryEnter(node.AccountBreakerKey))
+            {
+                tried.Add($"{node.Label} [账号熔断中，跳过]");
+                continue;
+            }
+
             if (!_breakers.TryEnter(node.BreakerKey))
             {
-                tried.Add($"{node.Label} [熔断中，跳过]");
+                tried.Add($"{node.Label} [模型熔断中，跳过]");
                 continue;
             }
 
@@ -190,6 +196,7 @@ public sealed class FailoverExecutor
                     ct);
 
                 _breakers.RecordSuccess(node.BreakerKey);
+                _breakers.RecordSuccess(node.AccountBreakerKey);
                 return node;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -199,13 +206,19 @@ public sealed class FailoverExecutor
             catch (Exception e) when (sink.Committed)
             {
                 // 已向客户端写出字节，无法换源：记录熔断 + 补 error chunk 收尾
-                _breakers.RecordFailure(node.BreakerKey, e.Message);
+                var immediate = IsImmediate(e);
+                _breakers.RecordFailure(node.BreakerKey, e.Message, immediate);
+                if (IsAccountFatal(e, immediate))
+                    _breakers.RecordFailure(node.AccountBreakerKey, e.Message, immediate: true);
                 await sink.WriteErrorAsync(e.Message, CancellationToken.None);
                 throw new ChainExhaustedException(new[] { $"{node.Label}: {e.Message}（流已提交，不再切换）" });
             }
             catch (Exception e) when (IsRetryable(e, ct))
             {
-                _breakers.RecordFailure(node.BreakerKey, e.Message);
+                var immediate = IsImmediate(e);
+                _breakers.RecordFailure(node.BreakerKey, e.Message, immediate);
+                if (IsAccountFatal(e, immediate))
+                    _breakers.RecordFailure(node.AccountBreakerKey, e.Message, immediate: true);
                 tried.Add($"{node.Label}: {e.Message}");
             }
             // 其余（非重试类，如参数 4xx）直接向上抛，由 HTTP 层透传状态码
@@ -214,6 +227,25 @@ public sealed class FailoverExecutor
         throw new ChainExhaustedException(tried.Count > 0
             ? tried
             : new[] { "候选链为空或全部节点处于熔断状态" });
+    }
+
+    private static bool IsImmediate(Exception e) =>
+        e is UpstreamException ue && ue.StatusCode is 429 or 401 or 403;
+
+    private static bool IsAccountFatal(Exception e, bool immediate)
+    {
+        if (immediate) return true;
+        if (e is UpstreamException ue && ue.StatusCode is 429 or 401 or 403) return true;
+        var msg = e.Message;
+        if (string.IsNullOrEmpty(msg)) return false;
+        return msg.Contains("429") || msg.Contains("401") || msg.Contains("403") ||
+               msg.Contains("quota", StringComparison.OrdinalIgnoreCase) ||
+               msg.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ||
+               msg.Contains("额度", StringComparison.OrdinalIgnoreCase) ||
+               msg.Contains("余额", StringComparison.OrdinalIgnoreCase) ||
+               msg.Contains("NO_SESSION", StringComparison.OrdinalIgnoreCase) ||
+               msg.Contains("登录态", StringComparison.OrdinalIgnoreCase) ||
+               (msg.Contains("token", StringComparison.OrdinalIgnoreCase) && msg.Contains("expired", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>分类：上游 5xx/429/401/403 与一切网络/超时/未知错误视为可切换；客户端取消不算。</summary>

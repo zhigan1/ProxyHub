@@ -351,6 +351,7 @@ async function renderAccounts(){
       <div class="row">
         <button class="primary" onclick="addAccountModal()">＋ 手工添加账号</button>
         <button onclick="refreshAccounts()">重新扫描本机账号</button>
+        <button onclick="refreshCredits()">一键查询/刷新全部积分</button>
         <button class="danger" onclick="resetAll()">复位全部熔断</button>
         <span class="hint">多账号用于熔断后自动按顺序切号。禁用的账号不参与任何请求调度。</span>
       </div>
@@ -422,10 +423,10 @@ async function moveAccount(adapter, accountId, direction){
 }
 
 async function deleteAccount(adapter, accountId){
-  if(!confirm(`确认移除/删除账号 ${accountId}？（自动发现账号删除后将被禁用忽略）`)) return;
+  if(!confirm(`确认永久删除账号 ${accountId}？\n（将删除对应凭据文件并彻底移出调度链，永不复活）`)) return;
   try{
     await api(`/admin/api/accounts/${encodeURIComponent(adapter)}/${encodeURIComponent(accountId)}`, { method: 'DELETE' });
-    toast('账号已移除');
+    toast('账号已彻底删除');
     render();
   }catch(e){ toast(e.message, true); }
 }
@@ -434,6 +435,15 @@ async function refreshAccounts(){
   try{ const d=await api('/admin/api/accounts/refresh',{method:'POST'});
     toast(`已扫描：共 ${d.total} 个账号（手工 ${d.manual} 个）`); render();
   }catch(e){ toast(e.message,true); }
+}
+
+async function refreshCredits(){
+  try{
+    toast('正在查询全部账号积分与状态...');
+    const d = await api('/admin/api/accounts/refresh-credits', { method: 'POST' });
+    toast('积分与状态已刷新');
+    render();
+  }catch(e){ toast(e.message, true); }
 }
 
 /* ─────────── Manual Account Modal ─────────── */
@@ -560,11 +570,11 @@ async function renderConfig(){
           <div class="field"><label>上游超时 ms</label><input id="c_timeoutMs" value="${c.timeoutMs??120000}"></div>
           <div class="field" style="grid-column: 1 / -1;">
             <label style="margin-bottom:8px">适配器开关（需重启）</label>
-            <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));gap:10px;background:rgba(255,255,255,0.03);padding:10px 14px;border-radius:6px;border:1px solid var(--line)">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;background:rgba(255,255,255,0.02);padding:14px;border-radius:6px;border:1px solid var(--line)">
               ${['codebuddy','traecn','traework','qoder'].map(a=>`
-                <label style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;cursor:pointer;background:rgba(0,0,0,0.2);border-radius:4px;border:1px solid rgba(255,255,255,0.05);margin:0">
-                  <span class="mono" style="font-weight:600;font-size:13px">${a}</span>
-                  <input type="checkbox" id="c_ad_${a}" ${c.adapters?.[a]!==false?'checked':''} style="width:16px;height:16px;margin:0;cursor:pointer">
+                <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(0,0,0,0.25);border-radius:6px;border:1px solid var(--line);margin:0;cursor:pointer">
+                  <span class="mono" style="font-weight:600;font-size:13px;letter-spacing:0.5px">${a}</span>
+                  <input type="checkbox" id="c_ad_${a}" ${c.adapters?.[a]!==false?'checked':''} style="width:18px;height:18px;margin:0;cursor:pointer">
                 </label>`).join('')}
             </div>
           </div>

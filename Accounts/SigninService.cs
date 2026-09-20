@@ -49,7 +49,7 @@ public sealed class SigninService
             var r = await SigninAsync(acc, ct);
             results.Add(r);
             if (r.TotalCredits.HasValue)
-                rt.Accounts.UpdateCredit(acc.AdapterId, acc.AccountId, r.TotalCredits.Value);
+                rt.Accounts.UpdateCredit(acc.AdapterId, acc.AccountId, r.TotalCredits.Value, rt.ConfigStore);
             if (accounts.Count > 1) await Task.Delay(1200, ct);
         }
         LastRunAt = DateTimeOffset.UtcNow;
@@ -67,7 +67,7 @@ public sealed class SigninService
             var r = await GetStatusAsync(acc, ct);
             results.Add(r);
             if (r.TotalCredits.HasValue)
-                rt.Accounts.UpdateCredit(acc.AdapterId, acc.AccountId, r.TotalCredits.Value);
+                rt.Accounts.UpdateCredit(acc.AdapterId, acc.AccountId, r.TotalCredits.Value, rt.ConfigStore);
         }
         return results;
     }
@@ -279,14 +279,16 @@ public sealed class SigninService
         var req = new HttpRequestMessage(method ?? HttpMethod.Post, url);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", wb.AccessToken);
         req.Headers.TryAddWithoutValidation("X-User-Id", wb.Uid);
-        req.Headers.TryAddWithoutValidation("User-Agent", "WorkBuddy");
+        req.Headers.TryAddWithoutValidation("X-Domain", !string.IsNullOrEmpty(wb.Domain) ? wb.Domain : "www.codebuddy.cn");
+        req.Headers.TryAddWithoutValidation("X-Product", "SaaS");
+        req.Headers.TryAddWithoutValidation("X-IDE-Type", "CLI");
+        req.Headers.TryAddWithoutValidation("x-codebuddy-request", "1");
+        req.Headers.TryAddWithoutValidation("User-Agent", "CLI/2.136.0 CodeBuddy/2.136.0");
         if (!string.IsNullOrEmpty(wb.EnterpriseId))
         {
             req.Headers.TryAddWithoutValidation("X-Enterprise-Id", wb.EnterpriseId);
             req.Headers.TryAddWithoutValidation("X-Tenant-Id", wb.EnterpriseId);
         }
-        if (!string.IsNullOrEmpty(wb.Domain))
-            req.Headers.TryAddWithoutValidation("X-Domain", wb.Domain);
         req.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
         return req;
     }
@@ -297,16 +299,18 @@ public sealed class SigninService
         if (wb is null) return Fail(account, "workbuddy", "LOAD_ERROR", "凭据文件不存在或格式错误", null);
         try
         {
+            var availCreditsTask = FetchWbAvailableCreditsAsync(wb, ct);
             using var req = WbRequest($"{wb.Endpoint}/v2/billing/meter/checkin-activity-status", wb);
             using var resp = await _http.SendAsync(req, ct);
+            var availCredits = await availCreditsTask;
             if ((int)resp.StatusCode is 401 or 403)
                 return Fail(account, "workbuddy", "NO_SESSION", $"登录态失效（HTTP {(int)resp.StatusCode}）", null);
             if ((int)resp.StatusCode is < 200 or >= 300)
                 return Fail(account, "workbuddy", "ERROR", $"查询状态失败（HTTP {(int)resp.StatusCode}）", null);
             var body = await ParseJson(resp, ct);
-            if (Dig<bool>(body, "active") == false)
+            if (Dig<bool>(body, "active") == false && !availCredits.HasValue)
                 return new SigninResult(account.AdapterId, account.Label, "workbuddy", "INACTIVE", "签到活动未开启", null, null, null, null);
-            return BuildWbResult(account, body, resp.StatusCode, null, null);
+            return BuildWbResult(account, body, resp.StatusCode, null, null, availCredits);
         }
         catch (Exception e)
         {
@@ -320,9 +324,11 @@ public sealed class SigninService
         if (wb is null) return Fail(account, "workbuddy", "LOAD_ERROR", "凭据文件不存在或格式错误", null);
         try
         {
-            // 1. 查状态
+            // 1. 查状态与当前可用额度
+            var availCreditsTask = FetchWbAvailableCreditsAsync(wb, ct);
             using var statusReq = WbRequest($"{wb.Endpoint}/v2/billing/meter/checkin-activity-status", wb);
             using var statusResp = await _http.SendAsync(statusReq, ct);
+            var availCredits = await availCreditsTask;
             if ((int)statusResp.StatusCode is 401 or 403)
                 return Fail(account, "workbuddy", "NO_SESSION", $"登录态失效（HTTP {(int)statusResp.StatusCode}）", null);
             if ((int)statusResp.StatusCode is < 200 or >= 300)
@@ -330,12 +336,12 @@ public sealed class SigninService
 
             var statusBody = await ParseJson(statusResp, ct);
             var active = Dig<bool>(statusBody, "active");
-            if (active == false)
+            if (active == false && !availCredits.HasValue)
                 return new SigninResult(account.AdapterId, account.Label, "workbuddy", "INACTIVE", "签到活动未开启", null, null, null, null);
 
             var todayChecked = Dig<bool>(statusBody, "today_checked_in");
             if (todayChecked == true)
-                return BuildWbResult(account, statusBody, statusResp.StatusCode, "ALREADY", null);
+                return BuildWbResult(account, statusBody, statusResp.StatusCode, "ALREADY", null, availCredits);
 
             // 2. 签到
             using var claimReq = WbRequest($"{wb.Endpoint}/v2/billing/meter/daily-checkin", wb);
@@ -348,15 +354,16 @@ public sealed class SigninService
 
             // 已签到的幂等判断
             if (claimBody is JsonObject co && (Dig<int?>(co, "code") == 10001 || Dig<string>(co, "msg")?.Contains("已签") == true))
-                return BuildWbResult(account, statusBody, statusResp.StatusCode, "ALREADY", null);
+                return BuildWbResult(account, statusBody, statusResp.StatusCode, "ALREADY", null, availCredits);
 
             if (credit is not null && (int)claimResp.StatusCode is >= 200 and < 300)
             {
-                // 刷新状态
+                // 刷新状态与额度
+                var freshAvail = await FetchWbAvailableCreditsAsync(wb, ct);
                 using var req2 = WbRequest($"{wb.Endpoint}/v2/billing/meter/checkin-activity-status", wb);
                 using var resp2 = await _http.SendAsync(req2, ct);
                 var fresh = await ParseJson(resp2, ct);
-                return BuildWbResult(account, fresh ?? statusBody, claimResp.StatusCode, "CLAIMED", credit);
+                return BuildWbResult(account, fresh ?? statusBody, claimResp.StatusCode, "CLAIMED", credit, freshAvail ?? availCredits);
             }
 
             var errMsg = Dig<string>(claimBody, "msg") ?? $"HTTP {(int)claimResp.StatusCode}";
@@ -368,9 +375,50 @@ public sealed class SigninService
         }
     }
 
-    private static SigninResult BuildWbResult(AdapterAccount acc, JsonNode? body, System.Net.HttpStatusCode code, string? forceResult, int? credit)
+    private static async Task<int?> FetchWbAvailableCreditsAsync(WbAccount wb, CancellationToken ct)
     {
-        var totalCredits = Dig<int?>(body, "total_credits");
+        try
+        {
+            using var req = WbRequest($"{wb.Endpoint}/v2/billing/meter/get-user-resource", wb);
+            using var resp = await _http.SendAsync(req, ct);
+            if ((int)resp.StatusCode is >= 200 and < 300)
+            {
+                var body = await ParseJson(resp, ct);
+                if (body is JsonObject root)
+                {
+                    // 1. 尝试直接获取顶层或 data 层的总额度/余额字段
+                    var direct = Dig<int?>(root, "available_credits") ?? Dig<int?>(root, "total_credits") ??
+                                 Dig<int?>(root, "remain_quota") ?? Dig<int?>(root, "balance");
+                    if (direct.HasValue) return direct.Value;
+
+                    // 2. 尝试从资源包列表累计
+                    JsonArray? list = null;
+                    if (root["Response"]?["Data"]?["ResourcePackageList"] is JsonArray a1) list = a1;
+                    else if (root["data"]?["resource_package_list"] is JsonArray a2) list = a2;
+                    else if (root["data"]?["ResourcePackageList"] is JsonArray a3) list = a3;
+                    else if (root["data"]?["packages"] is JsonArray a4) list = a4;
+
+                    if (list is not null && list.Count > 0)
+                    {
+                        var total = 0;
+                        foreach (var item in list)
+                        {
+                            var remain = Dig<int?>(item, "CapacityRemain") ?? Dig<int?>(item, "capacity_remain") ??
+                                         Dig<int?>(item, "remain") ?? Dig<int?>(item, "balance") ?? 0;
+                            total += remain;
+                        }
+                        return total;
+                    }
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static SigninResult BuildWbResult(AdapterAccount acc, JsonNode? body, System.Net.HttpStatusCode code, string? forceResult, int? credit, int? availableCredits = null)
+    {
+        var totalCredits = availableCredits ?? Dig<int?>(body, "total_credits");
         var streakDays = Dig<int?>(body, "streak_days");
         var todayChecked = Dig<bool?>(body, "today_checked_in");
         var todayCredit = credit ?? Dig<int?>(body, "today_credit") ?? Dig<int?>(body, "daily_credit");
@@ -381,10 +429,10 @@ public sealed class SigninService
         var result = forceResult ?? "OK"; // 状态查询成功即为 OK，今日是否已签看 TodayCheckedIn 字段
         var report = result switch
         {
-            "CLAIMED" => $"签到成功 +{credit}积分 · 连续{streakDays}天 · 累计{totalCredits}积分",
-            "ALREADY" => $"今日已签到 · 连续{streakDays}天 · 累计{totalCredits}积分",
+            "CLAIMED" => $"签到成功 +{credit}积分 · 连续{streakDays}天 · 可用额度 {totalCredits}积分",
+            "ALREADY" => $"今日已签到 · 连续{streakDays}天 · 可用额度 {totalCredits}积分",
             "INACTIVE" => "签到活动未开启",
-            "OK" => $"积分 {totalCredits} · 连续{streakDays}天 · 今日{(todayChecked == true ? "已签" : "未签")}",
+            "OK" => $"可用额度 {totalCredits}积分 · 连续{streakDays}天 · 今日{(todayChecked == true ? "已签" : "未签")}",
             _ => $"上游返回异常（HTTP {(int)code}）",
         };
         return new SigninResult(acc.AdapterId, acc.Label, "workbuddy", result, report, totalCredits, todayCredit, streakDays, todayChecked);
@@ -404,11 +452,31 @@ public sealed class SigninService
         if (node is null) return default;
         if (node is JsonObject obj)
         {
-            if (obj.TryGetPropertyValue(key, out var v) && v is JsonValue jv)
+            if (obj.TryGetPropertyValue(key, out var v) && v is not null)
             {
-                try { return jv.GetValue<T>(); } catch { }
+                if (v is JsonValue jv)
+                {
+                    try { return jv.GetValue<T>(); } catch { }
+                    if (typeof(T) == typeof(int?) || typeof(T) == typeof(int))
+                    {
+                        if (int.TryParse(jv.ToString(), out var i)) return (T)(object)i;
+                        if (double.TryParse(jv.ToString(), out var d)) return (T)(object)(int)d;
+                    }
+                    if (typeof(T) == typeof(bool?) || typeof(T) == typeof(bool))
+                    {
+                        if (bool.TryParse(jv.ToString(), out var b)) return (T)(object)b;
+                    }
+                    if (typeof(T) == typeof(string))
+                    {
+                        return (T)(object)jv.ToString();
+                    }
+                }
+                else if (typeof(T) == typeof(JsonArray) && v is JsonArray ja)
+                {
+                    return (T)(object)ja;
+                }
             }
-            foreach (var nested in new[] { "data", "result", "resp", "response" })
+            foreach (var nested in new[] { "data", "result", "resp", "response", "Data", "Result" })
             {
                 if (obj.TryGetPropertyValue(nested, out var child) && child is JsonObject)
                 {

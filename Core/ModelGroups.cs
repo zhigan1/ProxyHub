@@ -7,6 +7,7 @@ namespace ProxyHub;
 public sealed record ChainNode(IAdapter Adapter, AdapterAccount? Account, string UpstreamId, string ExternalId)
 {
     public string BreakerKey => $"{Adapter.Id}|{Account?.AccountId ?? "default"}|{UpstreamId}";
+    public string AccountBreakerKey => $"{Adapter.Id}|{Account?.AccountId ?? "default"}";
 
     public string Label => $"{ExternalId}@{Account?.AccountId ?? "default"}";
 

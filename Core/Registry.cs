@@ -92,24 +92,27 @@ public sealed class Registry
         var list = new List<(IAdapter Adapter, string UpstreamId)>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // 1. 动态拉取表中匹配
-        foreach (var (adapterId, dyn) in _dynamic)
+        // 1. 如果请求带平台前缀（如 cb-deepseek-v4.1-flash），精准匹配该适配器
+        foreach (var (adapterId, adapter) in _adapters)
         {
-            var dm = dyn.FirstOrDefault(mm => mm.ExternalId.Equals(externalId, StringComparison.OrdinalIgnoreCase));
-            if (dm is not null && _adapters.TryGetValue(adapterId, out var ad) && seen.Add(adapterId))
-                list.Add((ad, dm.UpstreamId));
+            if (externalId.StartsWith($"{adapterId}-", StringComparison.OrdinalIgnoreCase))
+            {
+                var bare = externalId[(adapterId.Length + 1)..];
+                var m = EffectiveModels(adapter).FirstOrDefault(x =>
+                    x.ExternalId.Equals(externalId, StringComparison.OrdinalIgnoreCase) ||
+                    x.UpstreamId.Equals(bare, StringComparison.OrdinalIgnoreCase));
+                if (m is not null && seen.Add(adapterId))
+                    list.Add((adapter, m.UpstreamId));
+                return list; // 前缀精准匹配
+            }
         }
 
-        // 2. 静态表与无前缀匹配
+        // 2. 无前缀请求（如 deepseek-v4.1-flash）：跨平台查找所有支持该上游模型的适配器
         foreach (var (adapterId, adapter) in _adapters)
         {
             if (seen.Contains(adapterId)) continue;
-            var bare = externalId.StartsWith($"{adapterId}-", StringComparison.OrdinalIgnoreCase)
-                ? externalId[(adapterId.Length + 1)..]
-                : externalId;
-
             var m = EffectiveModels(adapter).FirstOrDefault(x =>
-                x.UpstreamId.Equals(bare, StringComparison.OrdinalIgnoreCase) ||
+                x.UpstreamId.Equals(externalId, StringComparison.OrdinalIgnoreCase) ||
                 x.ExternalId.Equals(externalId, StringComparison.OrdinalIgnoreCase));
 
             if (m is not null && seen.Add(adapterId))

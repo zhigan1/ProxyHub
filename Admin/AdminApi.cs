@@ -233,7 +233,7 @@ public static class AdminApi
                         acc.Order,
                         source = acc.SourceFile is not null ? acc.SourceFile : acc.Pat is not null ? "pat" : "builtin",
                         acc.Discovered,
-                        openBreakers = breakers.Count(b => b.Key.StartsWith($"{a.Id}|{acc.AccountId}|") && b.State is "open" or "half-open"),
+                        openBreakers = breakers.Count(b => (b.Key == $"{a.Id}|{acc.AccountId}" || b.Key.StartsWith($"{a.Id}|{acc.AccountId}|")) && b.State is "open" or "half-open"),
                     }),
                 };
             });
@@ -250,7 +250,7 @@ public static class AdminApi
             if (string.IsNullOrEmpty(adapter) || string.IsNullOrEmpty(accountId))
                 return Error("adapter and accountId required", StatusCodes.Status400BadRequest);
 
-            rt.Accounts.ToggleAccount(adapter, accountId, enabled);
+            rt.Accounts.ToggleAccount(adapter, accountId, enabled, rt.ConfigStore);
             return Json(new { ok = true, adapter, accountId, enabled });
         });
 
@@ -264,7 +264,7 @@ public static class AdminApi
             if (string.IsNullOrEmpty(adapter) || string.IsNullOrEmpty(accountId) || direction == 0)
                 return Error("adapter, accountId and direction required", StatusCodes.Status400BadRequest);
 
-            rt.Accounts.MoveOrder(adapter, accountId, direction);
+            rt.Accounts.MoveOrder(adapter, accountId, direction, rt.ConfigStore);
             return Json(new { ok = true });
         });
 
@@ -278,14 +278,15 @@ public static class AdminApi
             if (string.IsNullOrEmpty(adapter) || string.IsNullOrEmpty(accountId) || !credits.HasValue)
                 return Error("adapter, accountId and credits required", StatusCodes.Status400BadRequest);
 
-            rt.Accounts.UpdateCredit(adapter, accountId, credits.Value);
+            rt.Accounts.UpdateCredit(adapter, accountId, credits.Value, rt.ConfigStore);
             return Json(new { ok = true, adapter, accountId, credits = credits.Value });
         });
 
-        app.MapDelete("/admin/api/accounts/{adapter}/{accountId}", (string adapter, string accountId, HttpContext ctx) =>
+        app.MapDelete("/admin/api/accounts/{adapter}/{*accountId}", (string adapter, string accountId, HttpContext ctx) =>
         {
             if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
-            rt.Accounts.DeleteAccount(adapter, accountId);
+            var decodedId = Uri.UnescapeDataString(accountId);
+            rt.Accounts.DeleteAccount(adapter, decodedId, rt.ConfigStore);
             return Json(new { ok = true });
         });
 
@@ -295,6 +296,13 @@ public static class AdminApi
             await rt.Accounts.RefreshAsync(rt.Adapters, ctx.RequestAborted);
             try { await SigninServiceInstance.GetStatusAllAsync(rt, ctx.RequestAborted); } catch { }
             return Json(new { ok = true, total = rt.Accounts.TotalCount, manual = rt.Accounts.ManualCount });
+        });
+
+        app.MapPost("/admin/api/accounts/refresh-credits", async (HttpContext ctx) =>
+        {
+            if (!Authorized(ctx)) return Error("Unauthorized", StatusCodes.Status401Unauthorized);
+            var results = await SigninServiceInstance.GetStatusAllAsync(rt, ctx.RequestAborted);
+            return Json(new { ok = true, accounts = results.Select(ToJson) });
         });
 
         app.MapGet("/admin/api/breakers", (HttpContext ctx) =>

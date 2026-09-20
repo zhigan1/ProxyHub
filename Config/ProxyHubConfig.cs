@@ -27,6 +27,15 @@ public sealed record ManualAccount
     public string? Pat { get; init; }
 }
 
+/// <summary>账号状态持久化：禁用、删除、自定义顺位、自定义/缓存积分。</summary>
+public sealed record AccountSetting
+{
+    public bool Disabled { get; init; }
+    public bool Deleted { get; init; }
+    public int? Order { get; init; }
+    public int? Credits { get; init; }
+}
+
 /// <summary>管理页与自动签到配置。</summary>
 public sealed record AdminConfig
 {
@@ -57,6 +66,8 @@ public sealed record ProxyHubConfig
     public CircuitBreakerConfig CircuitBreaker { get; init; } = new();
     public IReadOnlyDictionary<string, IReadOnlyList<ManualAccount>> Accounts { get; init; }
         = new Dictionary<string, IReadOnlyList<ManualAccount>>();
+    public IReadOnlyDictionary<string, AccountSetting> AccountSettings { get; init; }
+        = new Dictionary<string, AccountSetting>(StringComparer.OrdinalIgnoreCase);
     public AdminConfig Admin { get; init; } = new();
 
     /// <summary>实际使用的配置文件路径（不存在时也为 admin 写回指定落点）。</summary>
@@ -121,8 +132,27 @@ public sealed record ProxyHubConfig
             Groups = FileGroups(file) ?? DefaultGroups(),
             CircuitBreaker = FileCircuitBreaker(file) ?? new CircuitBreakerConfig(),
             Accounts = FileAccounts(file),
+            AccountSettings = FileAccountSettings(file),
             Admin = FileAdmin(file) ?? new AdminConfig(),
         };
+    }
+
+    private static IReadOnlyDictionary<string, AccountSetting> FileAccountSettings(JsonObject? file)
+    {
+        var result = new Dictionary<string, AccountSetting>(StringComparer.OrdinalIgnoreCase);
+        if (file?["accountSettings"] is not JsonObject settings) return result;
+        foreach (var (key, node) in settings)
+        {
+            if (node is not JsonObject s) continue;
+            result[key] = new AccountSetting
+            {
+                Disabled = s["disabled"] is JsonValue dv && dv.TryGetValue<bool>(out var d) && d,
+                Deleted = s["deleted"] is JsonValue delv && delv.TryGetValue<bool>(out var del) && del,
+                Order = s["order"] is JsonValue ov && ov.TryGetValue<int>(out var o) ? o : null,
+                Credits = s["credits"] is JsonValue cv && cv.TryGetValue<int>(out var c) ? c : null,
+            };
+        }
+        return result;
     }
 
     private static JsonObject? ReadConfigFile(string path)

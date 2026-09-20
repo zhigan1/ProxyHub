@@ -240,7 +240,17 @@ public static class AppFactory
         // 1. 优先查命中分组（精确名或专属特化分组通配匹配）
         var matchedGroup = rt.Groups.FindMatchingGroup(model);
         if (matchedGroup is not null)
-            return rt.Groups.Expand(matchedGroup, rt.Registry, rt.Accounts, rt.Adapters);
+        {
+            var nodes = rt.Groups.Expand(matchedGroup, rt.Registry, rt.Accounts, rt.Adapters);
+            // 若特化分组候选链全部熔断/失败，自动追加 auto 备用模型，实现无缝切换
+            if (!matchedGroup.Equals("auto", StringComparison.OrdinalIgnoreCase) && rt.Groups.IsGroup("auto"))
+            {
+                var fallback = rt.Groups.Expand("auto", rt.Registry, rt.Accounts, rt.Adapters);
+                var seen = new HashSet<string>(nodes.Select(n => n.BreakerKey), StringComparer.OrdinalIgnoreCase);
+                nodes.AddRange(fallback.Where(f => seen.Add(f.BreakerKey)));
+            }
+            return nodes;
+        }
 
         // 2. 跨平台多适配器同名模型聚合轮次链
         var candidates = rt.Registry.ResolveAll(model);
@@ -262,6 +272,14 @@ public static class AppFactory
                     if (round < x.Accounts.Count)
                         nodes.Add(new ChainNode(x.Adapter, x.Accounts[round], x.UpstreamId, model));
                 }
+            }
+
+            // 同理：若该同名模型在全部平台账号上均熔断，自动追加 auto 备用模型
+            if (rt.Groups.IsGroup("auto"))
+            {
+                var fallback = rt.Groups.Expand("auto", rt.Registry, rt.Accounts, rt.Adapters);
+                var seen = new HashSet<string>(nodes.Select(n => n.BreakerKey), StringComparer.OrdinalIgnoreCase);
+                nodes.AddRange(fallback.Where(f => seen.Add(f.BreakerKey)));
             }
             return nodes;
         }

@@ -62,16 +62,18 @@ public sealed class CircuitBreakerRegistry
 
     public void RecordSuccess(string key)
     {
-        var node = _nodes.GetOrAdd(key, _ => new Node());
-        lock (node)
+        if (_nodes.TryGetValue(key, out var node))
         {
-            node.ConsecutiveFailures = 0;
-            node.OpenedAt = null;
-            node.Probing = 0;
+            lock (node)
+            {
+                node.ConsecutiveFailures = 0;
+                node.OpenedAt = null;
+                node.Probing = 0;
+            }
         }
     }
 
-    public void RecordFailure(string key, string? error = null)
+    public void RecordFailure(string key, string? error = null, bool immediate = false)
     {
         var node = _nodes.GetOrAdd(key, _ => new Node());
         lock (node)
@@ -79,8 +81,8 @@ public sealed class CircuitBreakerRegistry
             node.ConsecutiveFailures++;
             node.LastError = error;
             node.Probing = 0;
-            if (node.OpenedAt is not null || node.ConsecutiveFailures >= Math.Max(1, _settings.FailureThreshold))
-                node.OpenedAt = _clock(); // 首次达阈值 → Open；半开探测失败 → 重新计时
+            if (node.OpenedAt is not null || immediate || node.ConsecutiveFailures >= Math.Max(1, _settings.FailureThreshold))
+                node.OpenedAt = _clock(); // 首次达阈值或明确立即熔断（如 429/401）→ Open；半开探测失败 → 重新计时
         }
     }
 

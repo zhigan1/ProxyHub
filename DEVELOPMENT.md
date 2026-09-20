@@ -180,9 +180,22 @@ sequenceDiagram
   - 每个账号分配显式 `Order` 字段（#1, #2...）。
   - 支持后台 `POST /admin/api/accounts/move` 微调顺序并持久化。
   - `AccountsOf(adapterId)` 严格按 `Order` 升序过滤出启用的有效账号供候选链调用。
-- **账号隔离与删除**：
+- **账号隔离与彻底删除**：
   - `ToggleAccount`：一键启用/禁用，禁用的账号立即移出调度链，不参与请求也不计入熔断；
-  - `DeleteAccount`：彻底删除手工账号，或将不需要的自动发现账号写入黑名单。
+  - `DeleteAccount`：
+    - **查找时序安全**：在标记 `_deleted` 之前先检索目标账号元数据，确保能正确获取其物理文件路径；
+    - **物理凭据隔离**：将 CodeBuddy 等平台的物理凭据文件重命名为 `.deleted`（同时对 Trae 全局 `storage.json` 施加安全保护，避免误删 IDE 核心配置）；
+    - **持久化黑名单与手工账号清理**：在 `config.json` 的 `accountSettings` 中持久化 `deleted: true`，防止桌面端扫描器复活已删账号；同时从 `accounts` 配置数组中彻底移除该手工账号。
+
+### 3.4 跨模型账号级智能熔断机制 (`FailoverExecutor.cs` & `CircuitBreaker.cs`)
+
+针对多账号、多模型协同调度场景，系统实现了**分层熔断体系**：
+- **模型级熔断 (`BreakerKey: {adapter}|{account}|{model}`)**：针对特定模型超时、上游 500 或个别模型不支持的情况，仅隔离该账号下的该模型，不影响该账号其他可用模型。
+- **账号级智能熔断 (`AccountBreakerKey: {adapter}|{account}`)**：
+  - 当某个账号遇到 **429 (Rate Limit / Quota Reached)**、**401/403 (登录态失效 / Session Expired)** 或上游返回余额耗尽时，系统判定该账号整体不可用；
+  - 自动触发 `AccountBreakerKey` 的立即熔断（Immediate Open）；
+  - 后续针对该账号的**任何模型请求**（无论是直接请求还是在 `auto` 分组中展开）均直接在入口被拦截跳过，实现毫秒级自动切换至其他账号或备用平台，彻底消除“失效账号反复报错”的问题；
+  - 节点请求成功后同时自愈解除账号级与模型级熔断。
 
 ---
 
@@ -190,12 +203,12 @@ sequenceDiagram
 
 本服务借鉴了开源项目 [cockpit-tools](https://github.com/jlcodes99/cockpit-tools) 的账户配额监控与自动化签到理念，全面打通各平台的官方云端 API：
 
-### 4.1 各平台对接机制
+### 4.1 各平台对接机制与容错增强
 
 1. **腾讯 CodeBuddy / WorkBuddy**：
-   - 端点：`POST https://copilot.tencent.com/v2/billing/meter/checkin-activity-status` 与 `/v2/billing/meter/daily-checkin`；
-   - 携带 `X-Domain: www.codebuddy.cn`、`X-Product: SaaS`、`X-User-Id` 与 Bearer 令牌；
-   - 解析返回的 `totalCredits`（当前可用总积分）和 `todayCredit`（今日获得积分）。
+   - 端点：`POST https://copilot.tencent.com/v2/billing/meter/checkin-activity-status` 与 `/v2/billing/meter/get-user-resource`；
+   - 完整模拟 CLI 请求头（`X-Domain: www.codebuddy.cn`、`X-Product: SaaS`、`X-IDE-Type: CLI`、`x-codebuddy-request: 1`）；
+   - **自适应数据挖掘**：`Dig<T>` 支持从 `available_credits`、`total_credits`、`balance` 或 `ResourcePackageList[].CapacityRemain` 中自动容错提取数值（宽容支持字符串、浮点数与整数解析）。
 2. **字节 TraeWork (TRAE SOLO CN)**：
    - 端点：`POST https://api.trae.cn/trae/api/v2/ug/checkin_credits/status` 与 `/trae/api/v2/ug/checkin_credits/claim`；
    - 携带 `Authorization: Cloud-IDE-JWT {token}`、`X-User-Region: cn` 与 `x-device-id`；
@@ -203,16 +216,28 @@ sequenceDiagram
 3. **字节 TraeCN (国内标准版)**：
    - 官方服务端目前对国内标准版返回 `enable: false`（处于完全免费公测期，暂无单账户扣点钱包）；
    - 网关智能识别并展示为 `公测不限` 状态。
-4. **手动积分设定与更新**：
-   - 开放 `POST /admin/api/accounts/credit`，允许开发者或用户对任意账号自定义设定/备注积分额度，便于配合第三方 Key 或自建额度管理。
+4. **一键查询与手动设定**：
+   - 控制台与接口提供 `POST /admin/api/accounts/refresh-credits`，支持一键实时拉取并更新全平台账号最新可用额度；
+   - 开放 `POST /admin/api/accounts/credit`，允许开发者或用户对任意账号自定义设定/备注积分额度。
 
 ---
 
-## 五、 新增平台适配器开发指引
+## 五、 Git 提交与版本控制规范
+
+为保证团队协作与版本历史的可读性，本项目统一遵循**全中文 Git 提交规范**：
+- `feat: 新增...`：新增功能或平台适配
+- `fix: 修复...`：修复系统缺陷或上游接口变更
+- `refactor: 重构...`：代码结构优化、命名规范、目录整理
+- `docs: 文档...`：更新 README 或开发文档
+- `test: 测试...`：新增或更新单元测试与集成测试
+
+---
+
+## 六、 新增平台适配器开发指引
 
 若需为 ProxyHub 接入一个新的 AI 编程平台（例如某自建私有模型服务或新平台），仅需完成以下步骤：
 
-### 5.1 步骤 1：新建适配器类
+### 6.1 步骤 1：新建适配器类
 
 在 `Adapters/` 目录下新建 `MyPlatformAdapter.cs`，实现 `IAdapter` 接口：
 
@@ -274,7 +299,7 @@ public sealed class MyPlatformAdapter : IAdapter
 }
 ```
 
-### 5.2 步骤 2：在 `Program.cs` 中注册
+### 6.2 步骤 2：在 `Program.cs` 中注册
 
 在 `Program.cs` 的适配器初始化列表添加开关判断与实例化：
 
@@ -285,18 +310,18 @@ if (config.IsAdapterEnabled("myplatform"))
 
 ---
 
-## 六、 自动化测试与构建发布
+## 七、 自动化测试与构建发布
 
-### 6.1 运行测试套件
+### 7.1 运行测试套件
 
-测试项目位于 `ProxyHub.Tests/`，涵盖单元测试、故障转移模拟、热更新与 API 测试：
+测试项目位于 `ProxyHub.Tests/`，涵盖单元测试、故障转移模拟、账号池删除回归、热更新与 API 测试：
 
 ```powershell
 # 运行全量测试
 dotnet test ProxyHub.Tests\ProxyHub.Tests.csproj
 ```
 
-### 6.2 独立发布打包
+### 7.2 独立发布打包
 
 使用独立发布命令输出至指定目录，确保与正在运行的进程隔离：
 

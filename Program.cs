@@ -18,6 +18,7 @@ var groups = new ModelGroups(config.Groups);
 var breakers = new CircuitBreakerRegistry(config.CircuitBreaker);
 var accountRegistry = new AccountRegistry();
 accountRegistry.SetManual(config.Accounts);
+accountRegistry.ApplySettings(config.AccountSettings);
 
 // 注册启用的适配器（OCP：新增平台只需加一个适配器类并在此注册）
 var adapters = new List<IAdapter>();
@@ -34,6 +35,7 @@ runtimeCfg.Changed += cfg =>
     groups.Update(cfg.Groups);
     breakers.UpdateSettings(cfg.CircuitBreaker);
     accountRegistry.SetManual(cfg.Accounts);
+    accountRegistry.ApplySettings(cfg.AccountSettings);
 };
 using var reloader = new ConfigReloader(store);
 
