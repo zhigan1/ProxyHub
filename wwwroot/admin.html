@@ -138,13 +138,15 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--border
 .view-toggle button{border:none;background:transparent;padding:4px 10px;border-radius:4px;font-size:12px;color:var(--dim);cursor:pointer;transition:all .15s ease}
 .view-toggle button.active{background:var(--bg2);color:var(--acc);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,0.15)}
 .view-toggle button:hover:not(.active){color:var(--fg)}
-.account-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px;margin-bottom:16px}
-.account-card{background:var(--bg2);border:1px solid var(--line);border-radius:var(--border-radius);padding:14px;display:flex;flex-direction:column;justify-content:space-between;gap:12px;box-shadow:var(--card-shadow);transition:all .15s ease}
+.account-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:16px;align-items:stretch}
+.account-grid.cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.account-grid.cols-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.account-card{background:var(--bg2);border:1px solid var(--line);border-radius:var(--border-radius);padding:14px;display:flex;flex-direction:column;justify-content:space-between;gap:12px;box-shadow:var(--card-shadow);transition:all .15s ease;min-width:0}
 .account-card:hover{border-color:var(--acc)}
 .account-card.disabled{opacity:0.55;border-style:dashed}
 .account-card-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .account-card-title{display:flex;align-items:center;gap:8px;min-width:0}
-.account-card-body{display:flex;flex-direction:column;gap:10px}
+.account-card-body{display:flex;flex-direction:column;gap:10px;min-width:0}
 .account-credit-box{background:var(--bg3);border:1px solid var(--line);border-radius:6px;padding:10px 12px}
 .account-card-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .account-card-actions{display:flex;align-items:center;justify-content:space-between;padding-top:8px;border-top:1px solid var(--line);gap:8px}
@@ -152,7 +154,7 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:var(--border
   .account-layout{flex-direction:column}
   .account-sidebar{width:100%;flex-direction:row;overflow-x:auto;padding-bottom:6px}
   .platform-item{white-space:nowrap;flex-shrink:0}
-  .account-grid{grid-template-columns:1fr}
+  .account-grid,.account-grid.cols-2,.account-grid.cols-4{grid-template-columns:minmax(0,1fr)}
 }
 </style>
 </head>
@@ -879,12 +881,25 @@ async function delGroup(name){
 
 /* ─────────── Accounts & breakers ─────────── */
 let ACCOUNT_VIEW = localStorage.getItem('ph_account_view') || 'cards';
+
+// 卡片每行数量（2 / 3 / 4），默认 3；非法值回落到 3
+let ACCOUNT_COLS = parseInt(localStorage.getItem('ph_account_cols') || '3', 10);
+if(![2,3,4].includes(ACCOUNT_COLS)) ACCOUNT_COLS = 3;
+
 let SELECTED_PLATFORM = 'all';
 let ACCOUNTS_CACHE = null;
 
 function switchAccountView(v){
   ACCOUNT_VIEW = v;
   localStorage.setItem('ph_account_view', v);
+  renderAccountMain();
+}
+
+function switchAccountCols(n){
+  const cols = parseInt(n, 10);
+  if(![2,3,4].includes(cols)) return;
+  ACCOUNT_COLS = cols;
+  localStorage.setItem('ph_account_cols', String(cols));
   renderAccountMain();
 }
 
@@ -959,29 +974,21 @@ function getFilteredAccountGroups(){
 }
 
 function renderAccountCards(groups){
-  let html = '';
-  let totalRendered = 0;
-
+  // 单一连续网格：所有平台的账号汇入同一个网格连续铺满。
+  // 不再按平台分块渲染分组标题——账号少的平台会独占一行、右侧留出大片空白；
+  // 平台信息已由卡片自身的徽标与左侧分类栏承载。
+  const flat = [];
   groups.forEach(g => {
-    const adapter = g.adapter;
     const accounts = g.accounts || [];
+    accounts.forEach((acc, idx) => flat.push({ adapter: g.adapter, acc, idx, count: accounts.length }));
+  });
 
-    if(SELECTED_PLATFORM === 'all'){
-      if(accounts.length === 0) return;
-      html += `<div style="margin: 8px 0 10px; font-weight: 600; font-size: 13px; color: var(--dim); display: flex; align-items: center; gap: 8px;">
-        ${getPlatformBadge(adapter)}
-        <span>${esc(adapter)}（${accounts.length} 个账号）</span>
-      </div>`;
-    }
+  if(flat.length === 0){
+    return `<div class="card hint">未检测到符合条件的账号（凭据缺失或未登录对应客户端）。</div>`;
+  }
 
-    if(accounts.length === 0){
-      html += `<div class="card hint" style="margin-bottom:14px">该平台未发现可用账号（凭据缺失或未登录对应客户端）</div>`;
-      return;
-    }
-
-    html += `<div class="account-grid">`;
-    accounts.forEach((acc, idx) => {
-      totalRendered++;
+  let html = `<div class="account-grid cols-${ACCOUNT_COLS}">`;
+  flat.forEach(({ adapter, acc, idx, count }) => {
       const isEnabled = acc.enabled !== false;
       const cardClass = isEnabled ? 'account-card' : 'account-card disabled';
       const hasBreaker = acc.openBreakers > 0;
@@ -1063,7 +1070,7 @@ function renderAccountCards(groups){
           <div class="account-card-actions">
             <div class="row" style="margin-bottom:0;gap:4px">
               <button class="small" onclick="moveAccount('${esc(adapter)}','${esc(acc.accountId)}',-1)" ${idx === 0 ? 'disabled' : ''} title="上移">↑</button>
-              <button class="small" onclick="moveAccount('${esc(adapter)}','${esc(acc.accountId)}',1)" ${idx === accounts.length - 1 ? 'disabled' : ''} title="下移">↓</button>
+              <button class="small" onclick="moveAccount('${esc(adapter)}','${esc(acc.accountId)}',1)" ${idx === count - 1 ? 'disabled' : ''} title="下移">↓</button>
             </div>
             <div class="row" style="margin-bottom:0;gap:6px">
               <button class="small ${isEnabled ? '' : 'primary'}" onclick="toggleAccount('${esc(adapter)}','${esc(acc.accountId)}',${!isEnabled})">
@@ -1074,15 +1081,9 @@ function renderAccountCards(groups){
           </div>
         </div>
       `;
-    });
-    html += `</div>`;
   });
 
-  if(totalRendered === 0){
-    return `<div class="card hint">未检测到符合条件的账号。</div>`;
-  }
-
-  return html;
+  return html + `</div>`;
 }
 
 function renderAccountTable(groups){
@@ -1152,10 +1153,15 @@ function renderAccountsFrame(){
           <button onclick="refreshCredits()">一键查询/刷新全部积分</button>
           <button class="danger" onclick="resetAll()">复位全部熔断</button>
         </div>
-        <div class="row" style="margin-bottom:0;align-items:center">
+        <div class="row" style="margin-bottom:0;align-items:center;gap:8px">
+          <div class="view-toggle" id="account_cols" title="卡片每行显示数量" style="${ACCOUNT_VIEW === 'cards' ? '' : 'display:none'}">
+            <button data-cols="2" class="${ACCOUNT_COLS === 2 ? 'active' : ''}" onclick="switchAccountCols(2)">2 列</button>
+            <button data-cols="3" class="${ACCOUNT_COLS === 3 ? 'active' : ''}" onclick="switchAccountCols(3)">3 列</button>
+            <button data-cols="4" class="${ACCOUNT_COLS === 4 ? 'active' : ''}" onclick="switchAccountCols(4)">4 列</button>
+          </div>
           <div class="view-toggle">
-            <button class="${ACCOUNT_VIEW === 'cards' ? 'active' : ''}" onclick="switchAccountView('cards')">⊞ 卡片</button>
-            <button class="${ACCOUNT_VIEW === 'table' ? 'active' : ''}" onclick="switchAccountView('table')">≡ 表格</button>
+            <button data-view="cards" class="${ACCOUNT_VIEW === 'cards' ? 'active' : ''}" onclick="switchAccountView('cards')">⊞ 卡片</button>
+            <button data-view="table" class="${ACCOUNT_VIEW === 'table' ? 'active' : ''}" onclick="switchAccountView('table')">≡ 表格</button>
           </div>
         </div>
       </div>
@@ -1181,14 +1187,22 @@ function renderAccountsFrame(){
 function renderAccountMain(){
   const container = document.getElementById('account_list_container');
   if(!container) return renderAccountsFrame();
-  container.innerHTML = ACCOUNT_VIEW === 'cards' 
-    ? renderAccountCards(getFilteredAccountGroups()) 
+  container.innerHTML = ACCOUNT_VIEW === 'cards'
+    ? renderAccountCards(getFilteredAccountGroups())
     : renderAccountTable(getFilteredAccountGroups());
+  syncAccountViewControls();
+}
 
-  document.querySelectorAll('.view-toggle button').forEach(btn => {
-    if(btn.textContent.includes('卡片')) btn.className = ACCOUNT_VIEW === 'cards' ? 'active' : '';
-    if(btn.textContent.includes('表格')) btn.className = ACCOUNT_VIEW === 'table' ? 'active' : '';
+// 工具条上「卡片/表格」与「每行列数」的选中态同步（切换后只有内容区被重绘）
+function syncAccountViewControls(){
+  document.querySelectorAll('[data-view]').forEach(btn => {
+    btn.className = btn.dataset.view === ACCOUNT_VIEW ? 'active' : '';
   });
+  document.querySelectorAll('[data-cols]').forEach(btn => {
+    btn.className = String(ACCOUNT_COLS) === btn.dataset.cols ? 'active' : '';
+  });
+  const colBox = document.getElementById('account_cols');
+  if(colBox) colBox.style.display = ACCOUNT_VIEW === 'cards' ? '' : 'none';
 }
 
 async function renderAccounts(){
