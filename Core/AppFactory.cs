@@ -25,10 +25,32 @@ public sealed class ProxyHubRuntime
 /// </summary>
 public static class AppFactory
 {
-    public static WebApplication Build(ProxyHubRuntime rt, string? url = null)
+    public static WebApplication Build(ProxyHubRuntime rt, string? url = null, string[]? args = null)
     {
-        var builder = WebApplication.CreateBuilder();
-        builder.WebHost.UseUrls(url ?? $"http://127.0.0.1:{rt.Config.Current.Port}");
+        // 兼容单破折号传参（如 -urls=http://... 或 -urls http://...）自动转换为 --urls
+        var normalizedArgs = (args ?? []).Select(a =>
+        {
+            if (a.StartsWith("-urls", StringComparison.OrdinalIgnoreCase) && !a.StartsWith("--", StringComparison.Ordinal))
+                return "-" + a;
+            return a;
+        }).ToArray();
+
+        var builder = WebApplication.CreateBuilder(normalizedArgs);
+
+        var listenUrl = url ?? builder.Configuration["urls"];
+        if (!string.IsNullOrWhiteSpace(listenUrl))
+        {
+            var splitUrls = listenUrl.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (splitUrls.Length > 0)
+                builder.WebHost.UseUrls(splitUrls);
+            else
+                builder.WebHost.UseUrls($"http://127.0.0.1:{rt.Config.Current.Port}");
+        }
+        else
+        {
+            builder.WebHost.UseUrls($"http://127.0.0.1:{rt.Config.Current.Port}");
+        }
+
         builder.Services.ConfigureHttpJsonOptions(o =>
             o.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
         var app = builder.Build();

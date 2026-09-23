@@ -67,9 +67,7 @@ var rt = new ProxyHubRuntime
     ConfigStore = store,
 };
 
-var app = AppFactory.Build(rt);
-app.Urls.Clear();
-app.Urls.Add($"http://127.0.0.1:{config.Port}");
+var app = AppFactory.Build(rt, args: args);
 
 // 启动期后台刷新：账号扫描 + 动态模型列表（失败自动回退静态基线/无账号，不阻塞启动）
 _ = Task.Run(async () =>
@@ -129,8 +127,11 @@ _ = Task.Run(async () =>
 });
 
 await app.StartAsync();
-Console.WriteLine($"ProxyHub (.NET) listening on http://127.0.0.1:{config.Port}");
-Console.WriteLine($"Admin UI:               http://127.0.0.1:{config.Port}/admin");
+var listenUrls = app.Urls.Count > 0 ? string.Join(", ", app.Urls) : $"http://127.0.0.1:{config.Port}";
+Console.WriteLine($"ProxyHub (.NET) listening on {listenUrls}");
+var firstUrl = app.Urls.FirstOrDefault()?.TrimEnd('/') ?? $"http://127.0.0.1:{config.Port}";
+var adminUrl = firstUrl.Replace("0.0.0.0", "127.0.0.1").Replace("[::]", "127.0.0.1") + "/admin";
+Console.WriteLine($"Admin UI:               {adminUrl}");
 Console.WriteLine($"Config (hot reload):    {configPath}");
 await app.WaitForShutdownAsync();
 
